@@ -574,11 +574,18 @@ export default function App() {
     return true;
   };
 
-  const handleExportAirGappedBundle = (): string => {
+  const handlePreviewAirGappedExport = () =>
+    foundrySyncService.previewAirGappedExport({
+      projects: state.projects,
+      artifacts: state.artifacts,
+      operations: state.operations,
+    });
+
+  const handleExportAirGappedBundle = (operatorConfirmed: boolean): string => {
     const bundle = foundrySyncService.buildAirGappedBundle({
       integrationMode: state.integrationMode,
+      operatorConfirmed,
       projects: state.projects,
-      conversations: state.conversations,
       operations: state.operations,
       artifacts: state.artifacts,
     });
@@ -588,10 +595,10 @@ export default function App() {
       const op = durableLocalStore.createOperation({
         projectId: activeProject?.id ?? 'workspace',
         kind: 'AIR_GAPPED_BUNDLE_EXPORT',
-        label: `Exported air-gapped transfer bundle (${filename})`,
+        label: `Exported sanitized metadata bundle (${filename})`,
         revision: nextRev,
         syncState: 'AIR_GAPPED_EXPORTED',
-        note: 'Sanitized offline JSON bundle downloaded.',
+        note: 'Allowlisted plaintext JSON metadata downloaded.',
       });
       return {
         ...prev,
@@ -674,6 +681,7 @@ export default function App() {
               }
               operations={state.operations}
               storageDiagnostics={storageDiagnostics}
+              onPreviewAirGappedExport={handlePreviewAirGappedExport}
               onExportAirGappedBundle={handleExportAirGappedBundle}
               onClearOperations={() =>
                 setState((prev) => ({

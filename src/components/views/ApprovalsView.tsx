@@ -61,11 +61,27 @@ export const ApprovalsView: React.FC<ApprovalsViewProps> = ({ projects, approval
                       <div className="font-medium text-slate-100">{apr.title}</div>
                       <div className="text-[11px] text-slate-400 mt-0.5">
                         {project?.name ?? apr.projectId} · <span className="font-mono">{apr.gate}</span>
+                        {apr.authorizationScope && (
+                          <span> · Scope: <span className="font-mono">{apr.authorizationScope}</span></span>
+                        )}
                       </div>
                       <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">{apr.rationale}</p>
+                      {(apr.sourceRevision || apr.artifactDigest) && (
+                        <div className="mt-1.5 text-[10px] font-mono text-slate-500 truncate">
+                          {apr.sourceRevision ? `rev: ${apr.sourceRevision}` : ''}
+                          {apr.artifactDigest ? ` · digest: ${apr.artifactDigest.slice(0, 12)}...` : ''}
+                        </div>
+                      )}
                     </td>
                     <td className="py-3.5 px-4 text-slate-300 align-top">{apr.requiredRole}</td>
-                    <td className="py-3.5 px-4 text-slate-300 align-top">{apr.authorizedReviewer}</td>
+                    <td className="py-3.5 px-4 text-slate-300 align-top">
+                      <div>{apr.authorizedReviewer}</div>
+                      {apr.authenticatedApproverId && (
+                        <div className="text-[10px] font-mono text-slate-500 mt-0.5">
+                          ID: {apr.authenticatedApproverId}
+                        </div>
+                      )}
+                    </td>
                     <td className="py-3.5 px-4 font-mono text-rose-300 align-top">NO (Prohibited)</td>
                     <td className="py-3.5 px-5 text-right align-top">
                       <StatusTag value={apr.disposition} />

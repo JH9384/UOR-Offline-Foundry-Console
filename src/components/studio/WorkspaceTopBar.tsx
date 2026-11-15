@@ -28,7 +28,8 @@ interface WorkspaceTopBarProps {
   onSelectConnectivityProfile: (profile: ConnectivityProfile) => void;
   operations: DurableOperation[];
   storageDiagnostics: DurableStorageDiagnostics;
-  onExportAirGappedBundle: () => string;
+  onPreviewAirGappedExport: () => import('../../types/foundry').AirGappedExportPreview;
+  onExportAirGappedBundle: (operatorConfirmed: boolean) => string;
   onClearOperations: () => void;
   onOpenMobileMenu: () => void;
   onOpenAdvancedSection: (section: NavigationSectionId) => void;
@@ -61,12 +62,15 @@ export const WorkspaceTopBar: React.FC<WorkspaceTopBarProps> = ({
   onSelectConnectivityProfile,
   operations,
   storageDiagnostics,
+  onPreviewAirGappedExport,
   onExportAirGappedBundle,
   onClearOperations,
   onOpenMobileMenu,
   onOpenAdvancedSection,
 }) => {
   const [runtimeOpen, setRuntimeOpen] = useState(false);
+  const [exportPreviewOpen, setExportPreviewOpen] = useState(false);
+  const [exportConfirmed, setExportConfirmed] = useState(false);
   const [bundleNotice, setBundleNotice] = useState<string | null>(null);
 
   const policy = foundrySyncService.evaluateConnectivityPolicy({
@@ -76,9 +80,14 @@ export const WorkspaceTopBar: React.FC<WorkspaceTopBarProps> = ({
     onlineAuthValidated: false,
   });
 
+  const exportPreview = exportPreviewOpen ? onPreviewAirGappedExport() : null;
+
   const handleBundleDownload = () => {
-    const filename = onExportAirGappedBundle();
-    setBundleNotice(`Exported ${filename}`);
+    if (!exportConfirmed) return;
+    const filename = onExportAirGappedBundle(true);
+    setBundleNotice(`Exported allowlisted JSON: ${filename}`);
+    setExportConfirmed(false);
+    setExportPreviewOpen(false);
   };
 
   return (
@@ -145,7 +154,7 @@ export const WorkspaceTopBar: React.FC<WorkspaceTopBarProps> = ({
         </button>
 
         {runtimeOpen && (
-          <div className="absolute right-0 mt-2 w-96 max-w-[calc(100vw-2rem)] bg-[#111827] border border-slate-700/80 rounded-lg p-4 space-y-3.5 shadow-xl z-40">
+          <div className="absolute right-0 mt-2 w-96 max-w-[calc(100vw-2rem)] max-h-[82vh] overflow-y-auto bg-[#111827] border border-slate-700/80 rounded-lg p-4 space-y-3.5 shadow-xl z-40">
             <div className="flex items-center justify-between pb-2.5 border-b border-slate-800">
               <span className="text-xs font-semibold text-slate-100">
                 Runtime, Persistence &amp; Sync Boundary
@@ -204,21 +213,66 @@ export const WorkspaceTopBar: React.FC<WorkspaceTopBarProps> = ({
               <p className="text-[11px] text-slate-400 leading-relaxed">{policy.explanation}</p>
             </div>
 
-            {/* Air-Gapped Transfer Export */}
-            <div className="pt-2.5 border-t border-slate-800 flex items-center justify-between gap-2">
-              <button
-                type="button"
-                onClick={handleBundleDownload}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium bg-[#0B0F17] hover:bg-slate-800 border border-slate-700 rounded text-slate-200 transition-colors"
-              >
-                <Download className="w-3 h-3 text-blue-400" aria-hidden="true" />
-                <span>Export Air-Gapped Bundle</span>
-              </button>
-              <span className="text-[10px] font-mono text-slate-500">No tokens included</span>
+            {/* Sanitized Air-Gapped Transfer Export (Preview + Explicit Confirmation) */}
+            <div className="pt-2.5 border-t border-slate-800 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExportPreviewOpen((prev) => !prev);
+                    setExportConfirmed(false);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium bg-[#0B0F17] hover:bg-slate-800 border border-slate-700 rounded text-slate-200 transition-colors"
+                >
+                  <Download className="w-3 h-3 text-blue-400" aria-hidden="true" />
+                  <span>{exportPreviewOpen ? 'Hide Export Preview' : 'Preview Sanitized Export'}</span>
+                </button>
+                <span className="text-[10px] font-mono text-slate-500">Imports: Disabled</span>
+              </div>
+
+              {exportPreview && (
+                <div className="p-3 bg-[#0B0F17] border border-slate-800 rounded space-y-2 text-[11px]">
+                  <div className="font-mono text-slate-200">
+                    Allowlisted Metadata ({exportPreview.schema})
+                  </div>
+                  <ul className="space-y-1 text-slate-400">
+                    {exportPreview.includedCategories.map((cat) => (
+                      <li key={cat.category} className="flex items-center justify-between gap-2">
+                        <span>{cat.category}</span>
+                        <span className="font-mono text-slate-200 tabular-nums">{cat.count}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="text-[10px] text-slate-500 leading-relaxed">
+                    Excluded by default: credentials, chat messages, raw artifacts, local paths, unknown properties.
+                  </div>
+                  <div className="text-[10px] text-amber-300 leading-relaxed">
+                    {exportPreview.securityDisclaimer}
+                  </div>
+                  <label className="flex items-start gap-2 text-[11px] text-slate-300 pt-1 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={exportConfirmed}
+                      onChange={(e) => setExportConfirmed(e.target.checked)}
+                      className="mt-0.5 rounded border-slate-700 bg-slate-900 text-blue-600"
+                    />
+                    <span>I confirm exporting allowlisted plaintext metadata only.</span>
+                  </label>
+                  <button
+                    type="button"
+                    disabled={!exportConfirmed}
+                    onClick={handleBundleDownload}
+                    className="w-full py-1.5 text-xs font-medium rounded bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-500 text-white transition-colors"
+                  >
+                    Confirm &amp; Download Export
+                  </button>
+                </div>
+              )}
+
+              {bundleNotice && (
+                <div className="text-[11px] font-mono text-blue-300 truncate">{bundleNotice}</div>
+              )}
             </div>
-            {bundleNotice && (
-              <div className="text-[11px] font-mono text-blue-300 truncate">{bundleNotice}</div>
-            )}
 
             {/* Durable Local Operations */}
             <div className="pt-2.5 border-t border-slate-800 space-y-2">

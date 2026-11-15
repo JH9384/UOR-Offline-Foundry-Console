@@ -1,0 +1,9 @@
+summary: "UOR Offline Foundry Console (Restricted Local Workspace)"
+custom_path: "uor-foundry-console"
+public: false
+guests: false
+# Access & Execution Policy:
+# - Private to authenticated members of Windmill workspace `uor-offline-foundry`.
+# - Anonymous execution, shell command pass-through, repository writes, signing,
+#   and automated production release are prohibited.
+# - Independent verification and human release governance remain separate from Windmill.

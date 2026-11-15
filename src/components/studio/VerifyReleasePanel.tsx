@@ -54,15 +54,14 @@ export const VerifyReleasePanel: React.FC<VerifyReleasePanelProps> = ({
             <StatusTag
               value={
                 authoritySummary.releaseEligible
-                  ? 'APPROVED_FOR_TEST_SIMULATION'
+                  ? 'APPROVED_FOR_RELEASE'
                   : 'RELEASE BLOCKED'
               }
             />
           </div>
           <div className="text-[11px] font-mono text-slate-400 tabular-nums">
-            Authoritative PASS: {authoritySummary.authoritativePassCount} · Simulated Only:{' '}
-            {authoritySummary.simulatedOnlyCount} · Missing/Unverified:{' '}
-            {authoritySummary.unverifiedOrMissingCount}
+            Policy: {authoritySummary.policyId ?? 'NONE'} ({authoritySummary.policyVersion ?? 'unestablished'}) · Authenticated PASS:{' '}
+            {authoritySummary.authenticatedPassCount}/{authoritySummary.requiredSuiteCount}
           </div>
         </div>
 
@@ -76,19 +75,19 @@ export const VerifyReleasePanel: React.FC<VerifyReleasePanelProps> = ({
               <ShieldAlert className="w-3.5 h-3.5 text-amber-400 shrink-0" aria-hidden="true" />
               <span>
                 {authoritySummary.digestMatched
-                  ? 'Authoritative evidence matches target artifact digest.'
-                  : 'Digest lacks matching authoritative verification evidence.'}
+                  ? 'Authenticated evidence covers all mandatory policy suites for this digest.'
+                  : `${authoritySummary.missingRequirements.length} mandatory policy requirements unverified or unbound.`}
               </span>
             </div>
           </div>
 
           <div className="p-3 bg-[#0B0F17] border border-slate-800 rounded space-y-1">
-            <div className="text-[11px] text-slate-500">Fail-Closed Governance Boundary</div>
+            <div className="text-[11px] text-slate-500">Fail-Closed Release Authorization</div>
             <div className="text-[11px] text-slate-300 flex items-start gap-1.5">
               <Lock className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" aria-hidden="true" />
               <span>
                 {authoritySummary.blockingReasons[0] ??
-                  'All independent suites verified; human governance sign-off required.'}
+                  'All independent suites authenticated and human APPROVED_FOR_RELEASE recorded.'}
               </span>
             </div>
           </div>

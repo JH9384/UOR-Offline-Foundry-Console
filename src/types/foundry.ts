@@ -167,9 +167,32 @@ export type VerificationSuiteAuthority =
   | 'Hologram Forge Application Core'
   | 'Browser & Identity Acceptance Suites';
 
+export type EvidenceAuthenticationStatus =
+  | 'AUTHENTICATED_BY_VERIFIER'
+  | 'UNAUTHENTICATED'
+  | 'SIMULATED_ONLY'
+  | 'STALE';
+
+export interface VerificationPolicySuiteRequirement {
+  authority: VerificationSuiteAuthority;
+  suiteId: string;
+  suiteLabel: string;
+  minSuiteVersion: string;
+}
+
+export interface VerificationPolicy {
+  policyId: string;
+  policyVersion: string;
+  productFamily: ProductFamily;
+  description: string;
+  requiredSuites: VerificationPolicySuiteRequirement[];
+}
+
 export interface VerificationSuiteRecord {
   id: string;
   projectId: string;
+  suiteId?: string;
+  suiteVersion?: string;
   suiteName: string;
   authority: VerificationSuiteAuthority;
   status: VerificationStatus;
@@ -178,6 +201,10 @@ export interface VerificationSuiteRecord {
   sourceRevision: string;
   toolchainIdentity: string;
   executionRecord: string;
+  authenticExecutionRef?: string;
+  evidenceProvenance?: string;
+  authenticationStatus?: EvidenceAuthenticationStatus;
+  policyVersion?: string;
   artifactHash?: string;
   lastCheckedAt?: string;
   isSimulated: boolean;
@@ -208,18 +235,32 @@ export type ApprovalDisposition =
   | 'PENDING'
   | 'DEFERRED'
   | 'APPROVED_FOR_TEST_SIMULATION'
+  | 'APPROVED_FOR_QUALIFICATION'
+  | 'APPROVED_FOR_RELEASE'
   | 'REJECTED'
   | 'BLOCKED';
+
+export type AuthorizationScope =
+  | 'TEST_EXECUTION'
+  | 'TECHNICAL_QUALIFICATION'
+  | 'PRODUCTION_RELEASE';
 
 export interface ApprovalDecisionRecord {
   id: string;
   projectId: string;
   gate: 'EXECUTION_AUTHORIZATION' | 'TECHNICAL_QUALIFICATION' | 'RELEASE_AUTHORIZATION';
+  authorizationScope?: AuthorizationScope;
   title: string;
   requiredRole: string;
   authorizedReviewer: string;
+  authenticatedApproverId?: string;
   disposition: ApprovalDisposition;
   aiPermitted: false;
+  isSimulated?: boolean;
+  artifactDigest?: string;
+  sourceRevision?: string;
+  evidenceRefs?: string[];
+  policyVersion?: string;
   rationale: string;
   decidedAt?: string;
   policyReference: string;
@@ -509,18 +550,71 @@ export interface SyncConflictRecord {
   resolution: 'UNRESOLVED' | 'KEEP_LOCAL' | 'ACCEPT_REMOTE_METADATA';
 }
 
+export interface SanitizedAirGappedProject {
+  projectId: string;
+  approvedTitle: string;
+  productFamily: ProductFamily;
+  workflowId: string;
+  sourceRevision: string;
+  lifecycleStatus: ProjectLifecycleStatus;
+  acceptancePolicySchema: string;
+}
+
+export interface SanitizedAirGappedArtifactRef {
+  artifactId: string;
+  projectId: string;
+  artifactName: string;
+  artifactFormat: string;
+  sha256Digest: string;
+  digestMode: 'DOCUMENTED_REFERENCE_DIGEST';
+  sourceRevision: string;
+}
+
+export interface SanitizedAirGappedOperationRef {
+  operationId: string;
+  projectId: string;
+  kind: DurableOperation['kind'];
+  revision: number;
+  timestamp: string;
+  syncState: OperationSyncState;
+}
+
+export interface AirGappedExportPreview {
+  schema: 'uor.foundry.air-gapped-bundle.v2';
+  transferClassification: 'UNENCRYPTED_UNSIGNED_METADATA_ONLY';
+  includedCategories: Array<{
+    category: 'projects' | 'workflowMetadata' | 'artifactDigests' | 'operationRefs';
+    count: number;
+    description: string;
+  }>;
+  excludedCategories: string[];
+  importPolicyStatus: 'DISABLED_NO_VALIDATED_POLICY';
+  securityDisclaimer: string;
+}
+
 export interface AirGappedTransferBundle {
-  schema: 'uor.foundry.air-gapped-bundle.v1';
+  schema: 'uor.foundry.air-gapped-bundle.v2';
   bundleId: string;
   exportedAt: string;
-  workspace: string;
+  workspace: 'uor-offline-foundry';
   integrationMode: IntegrationMode;
+  transferClassification: 'UNENCRYPTED_UNSIGNED_METADATA_ONLY';
+  importDisabled: true;
   autoReplayPermitted: false;
-  projects: ProjectRecord[];
-  conversations: ConversationThread[];
-  operations: DurableOperation[];
-  artifacts: ArtifactProvenanceRecord[];
-  warning: string;
+  operatorConfirmed: true;
+  manifest: {
+    includedCategories: string[];
+    excludedCategories: string[];
+    counts: {
+      projects: number;
+      artifactDigests: number;
+      operationRefs: number;
+    };
+  };
+  projects: SanitizedAirGappedProject[];
+  artifactDigests: SanitizedAirGappedArtifactRef[];
+  operationRefs: SanitizedAirGappedOperationRef[];
+  securityDisclaimer: string;
 }
 
 export interface OfflineQueueItem {

@@ -53,6 +53,8 @@ export const StatusTag: React.FC<StatusTagProps> = ({ value, className = '' }) =
     case 'COMPLETED':
     case 'DOCUMENTED':
     case 'APPROVED_FOR_TEST_SIMULATION':
+    case 'APPROVED_FOR_QUALIFICATION':
+    case 'APPROVED_FOR_RELEASE':
     case 'Validated':
     case 'VERIFIED':
     case 'APPROVED':
