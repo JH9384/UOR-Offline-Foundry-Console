@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { CheckCircle2, Info, Search, ShieldAlert, X } from 'lucide-react';
 import { MockPreviewChatProvider } from './adapters/chatProviderAdapter';
 import { IntakeModal } from './components/IntakeModal';
 import { Sidebar } from './components/Sidebar';
@@ -41,6 +42,7 @@ import {
   durableLocalStore,
   DurableStorageDiagnostics,
   DurableWorkspaceSnapshot,
+  recoverWorkspaceSnapshot,
 } from './services/durableLocalStore';
 import { foundryService } from './services/foundryService';
 import { foundrySyncService } from './services/syncService';
@@ -53,6 +55,7 @@ import {
   ConnectivityProfile,
   ConversationMessage,
   ConversationThread,
+  DraftHistoryEntry,
   DurableOperation,
   EngineeringIntakePayload,
   IntegrationMode,
@@ -60,6 +63,7 @@ import {
   OfflineQueueItem,
   PreviewConfigState,
   PreviewElementRef,
+  ProjectCheckpoint,
   ProjectRecord,
   SyncConflictRecord,
   VerificationSuiteRecord,
@@ -73,6 +77,8 @@ interface AppWorkspaceState {
   revision: number;
   integrationMode: IntegrationMode;
   connectivityProfile: ConnectivityProfile;
+  selectedProjectId?: string;
+  activeThreadId?: string;
   projects: ProjectRecord[];
   runs: WorkflowRun[];
   verifications: VerificationSuiteRecord[];
@@ -82,6 +88,8 @@ interface AppWorkspaceState {
   activity: ActivityEvent[];
   conversations: ConversationThread[];
   previews: Record<string, PreviewConfigState>;
+  draftHistory: DraftHistoryEntry[];
+  checkpoints: ProjectCheckpoint[];
   workflowRequests: WindmillExecutionRequest[];
   jobReferences: WindmillJobRecord[];
   operations: DurableOperation[];
@@ -89,28 +97,70 @@ interface AppWorkspaceState {
   offlineQueue: OfflineQueueItem[];
 }
 
-function buildSeedState(partial?: Partial<DurableWorkspaceSnapshot> | null): AppWorkspaceState {
+interface OperatorNotice {
+  id: string;
+  tone: 'info' | 'success' | 'warning' | 'error';
+  message: string;
+}
+
+const FIRST_RUN_DISMISSED_KEY = 'uor_foundry_first_run_dismissed_v1';
+
+function createDefaultSnapshot(): DurableWorkspaceSnapshot {
   return {
-    revision: partial?.revision ?? 1,
-    integrationMode: 'DEMO', // LOCAL/ONLINE stay locked until backend auth & permissions are validated
-    connectivityProfile: partial?.connectivityProfile ?? 'OFFLINE_ONLY',
-    projects:
-      Array.isArray(partial?.projects) && partial.projects.length > 0
-        ? partial.projects
-        : INITIAL_PROJECTS,
-    runs: partial?.runs ?? INITIAL_WORKFLOW_RUNS,
-    verifications: partial?.verifications ?? INITIAL_VERIFICATION_SUITES,
-    artifacts: partial?.artifacts ?? INITIAL_ARTIFACTS,
-    approvals: partial?.approvals ?? INITIAL_APPROVALS,
-    advisories: partial?.advisories ?? INITIAL_AI_ADVISORIES,
-    activity: partial?.activity ?? INITIAL_ACTIVITY,
-    conversations: partial?.conversations ?? INITIAL_CONVERSATIONS,
-    previews: partial?.previews ?? INITIAL_PREVIEW_STATES,
-    workflowRequests: partial?.workflowRequests ?? [],
-    jobReferences: partial?.jobReferences ?? DEMO_WINDMILL_JOB_FIXTURES,
-    operations: partial?.operations ?? [],
-    syncConflicts: partial?.syncConflicts ?? [],
-    offlineQueue: partial?.offlineQueue ?? INITIAL_OFFLINE_QUEUE,
+    schemaVersion: 2,
+    revision: 1,
+    updatedAt: new Date().toISOString(),
+    authoritativeDatabase: false,
+    persistenceNotice:
+      'Browser IndexedDB/localStorage cache only. Authoritative state lives in controlled Mac Studio repositories & Windmill.',
+    integrationMode: 'DEMO',
+    connectivityProfile: 'OFFLINE_ONLY',
+    selectedProjectId: INITIAL_PROJECTS[0]?.id ?? 'proj-prism-calc',
+    activeThreadId: INITIAL_CONVERSATIONS[0]?.id ?? 'thread-calc-main',
+    projects: INITIAL_PROJECTS,
+    runs: INITIAL_WORKFLOW_RUNS,
+    verifications: INITIAL_VERIFICATION_SUITES,
+    artifacts: INITIAL_ARTIFACTS,
+    approvals: INITIAL_APPROVALS,
+    advisories: INITIAL_AI_ADVISORIES,
+    activity: INITIAL_ACTIVITY,
+    conversations: INITIAL_CONVERSATIONS,
+    previews: INITIAL_PREVIEW_STATES,
+    draftHistory: [],
+    checkpoints: [],
+    workflowRequests: [],
+    jobReferences: DEMO_WINDMILL_JOB_FIXTURES,
+    operations: [],
+    syncConflicts: [],
+    offlineQueue: INITIAL_OFFLINE_QUEUE,
+  };
+}
+
+function buildSeedState(partial?: Partial<DurableWorkspaceSnapshot> | null): AppWorkspaceState {
+  const recovered = recoverWorkspaceSnapshot(partial, createDefaultSnapshot);
+  const s = recovered.snapshot;
+  return {
+    revision: s.revision,
+    integrationMode: 'DEMO',
+    connectivityProfile: s.connectivityProfile,
+    selectedProjectId: s.selectedProjectId,
+    activeThreadId: s.activeThreadId,
+    projects: s.projects,
+    runs: s.runs,
+    verifications: s.verifications,
+    artifacts: s.artifacts,
+    approvals: s.approvals,
+    advisories: s.advisories,
+    activity: s.activity,
+    conversations: s.conversations,
+    previews: s.previews,
+    draftHistory: s.draftHistory ?? [],
+    checkpoints: s.checkpoints ?? [],
+    workflowRequests: s.workflowRequests,
+    jobReferences: s.jobReferences,
+    operations: s.operations,
+    syncConflicts: s.syncConflicts,
+    offlineQueue: s.offlineQueue,
   };
 }
 
@@ -120,9 +170,13 @@ function loadInitialState(): AppWorkspaceState {
 }
 
 export default function App() {
-  const [state, setState] = useState<AppWorkspaceState>(loadInitialState);
+  const initialLoaded = useMemo(() => loadInitialState(), []);
+  const [state, setState] = useState<AppWorkspaceState>(initialLoaded);
   const [storageDiagnostics, setStorageDiagnostics] = useState<DurableStorageDiagnostics>({
-    backend: typeof window !== 'undefined' && 'indexedDB' in window ? 'indexeddb+localstorage' : 'localstorage-fallback',
+    backend:
+      typeof window !== 'undefined' && 'indexedDB' in window
+        ? 'indexeddb+localstorage'
+        : 'localstorage-fallback',
     indexedDbSupported: typeof window !== 'undefined' && 'indexedDB' in window,
     operationCount: 0,
     autoReplayPermitted: false,
@@ -133,20 +187,86 @@ export default function App() {
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('chat');
   const [activeSection, setActiveSection] = useState<NavigationSectionId>('overview');
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
-    () => loadInitialState().projects[0]?.id ?? 'proj-prism-calc'
+    () =>
+      initialLoaded.selectedProjectId &&
+      initialLoaded.projects.some((p) => p.id === initialLoaded.selectedProjectId)
+        ? initialLoaded.selectedProjectId
+        : initialLoaded.projects[0]?.id ?? 'proj-prism-calc'
   );
   const [activeThreadId, setActiveThreadId] = useState<string>(
-    () => loadInitialState().conversations[0]?.id ?? 'thread-calc-main'
+    () =>
+      initialLoaded.activeThreadId &&
+      initialLoaded.conversations.some((t) => t.id === initialLoaded.activeThreadId)
+        ? initialLoaded.activeThreadId
+        : initialLoaded.conversations[0]?.id ?? 'thread-calc-main'
   );
   const [referencedElement, setReferencedElement] = useState<PreviewElementRef | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [intakeModalOpen, setIntakeModalOpen] = useState(false);
+  const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
+  const [quickSwitchQuery, setQuickSwitchQuery] = useState('');
+
+  // Undo / Redo stacks per project
+  const [undoStacks, setUndoStacks] = useState<Record<string, DraftHistoryEntry[]>>({});
+  const [redoStacks, setRedoStacks] = useState<Record<string, DraftHistoryEntry[]>>({});
+
+  // Operator feedback & first-run guide
+  const [operatorNotice, setOperatorNotice] = useState<OperatorNotice | null>(null);
+  const [showFirstRunGuide, setShowFirstRunGuide] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    try {
+      return window.localStorage.getItem(FIRST_RUN_DISMISSED_KEY) !== '1';
+    } catch {
+      return true;
+    }
+  });
+  const [browserOnline, setBrowserOnline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
 
   // Async Chat provider state & cancellation controller
   const chatProvider = useMemo(() => new MockPreviewChatProvider(), []);
   const [chatGenState, setChatGenState] = useState<ChatGenerationState>('IDLE');
   const [chatError, setChatError] = useState<string | null>(null);
+  const [streamingText, setStreamingText] = useState<string>('');
+  const [lastRetryPrompt, setLastRetryPrompt] = useState<{
+    prompt: string;
+    referencedElement?: PreviewElementRef;
+  } | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  const notify = useCallback((tone: OperatorNotice['tone'], message: string) => {
+    setOperatorNotice({
+      id: `notice-${Date.now()}`,
+      tone,
+      message,
+    });
+  }, []);
+
+  // Track browser online/offline changes explicitly without equating them with Windmill
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleOffline = () => {
+      setBrowserOnline(false);
+      notify(
+        'warning',
+        'Browser network offline. Local workspace cache and simulated previews continue operating normally.'
+      );
+    };
+    const handleOnline = () => {
+      setBrowserOnline(true);
+      notify(
+        'info',
+        'Browser network online (non-authoritative). Windmill runtime remains NOT CONNECTED until locally validated.'
+      );
+    };
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('online', handleOnline);
+    return () => {
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('online', handleOnline);
+    };
+  }, [notify]);
 
   // Hydrate from IndexedDB if newer revision exists
   useEffect(() => {
@@ -155,7 +275,20 @@ export default function App() {
       if (!active || !idbSnap) return;
       setState((prev) => {
         if ((idbSnap.revision ?? 0) > prev.revision) {
-          return buildSeedState(idbSnap);
+          const next = buildSeedState(idbSnap);
+          if (
+            next.selectedProjectId &&
+            next.projects.some((p) => p.id === next.selectedProjectId)
+          ) {
+            setSelectedProjectId(next.selectedProjectId);
+          }
+          if (
+            next.activeThreadId &&
+            next.conversations.some((t) => t.id === next.activeThreadId)
+          ) {
+            setActiveThreadId(next.activeThreadId);
+          }
+          return next;
         }
         return prev;
       });
@@ -165,42 +298,55 @@ export default function App() {
     };
   }, []);
 
-  // Persist workspace snapshot to IndexedDB + localStorage (non-authoritative local cache)
-  useEffect(() => {
-    let cancelled = false;
-    const snapshot: DurableWorkspaceSnapshot = {
+  const buildSnapshotFromState = useCallback(
+    (s: AppWorkspaceState, projId: string, threadId: string): DurableWorkspaceSnapshot => ({
       schemaVersion: 2,
-      revision: state.revision,
+      revision: s.revision,
       updatedAt: new Date().toISOString(),
       authoritativeDatabase: false,
       persistenceNotice:
         'Browser IndexedDB/localStorage cache only. Authoritative state lives in controlled Mac Studio repositories & Windmill.',
-      integrationMode: state.integrationMode,
-      connectivityProfile: state.connectivityProfile,
-      projects: state.projects,
-      runs: state.runs,
-      verifications: state.verifications,
-      artifacts: state.artifacts,
-      approvals: state.approvals,
-      advisories: state.advisories,
-      activity: state.activity,
-      conversations: state.conversations,
-      previews: state.previews,
-      workflowRequests: state.workflowRequests,
-      jobReferences: state.jobReferences,
-      operations: state.operations,
-      syncConflicts: state.syncConflicts,
-      offlineQueue: state.offlineQueue,
-    };
+      integrationMode: s.integrationMode,
+      connectivityProfile: s.connectivityProfile,
+      selectedProjectId: projId,
+      activeThreadId: threadId,
+      projects: s.projects,
+      runs: s.runs,
+      verifications: s.verifications,
+      artifacts: s.artifacts,
+      approvals: s.approvals,
+      advisories: s.advisories,
+      activity: s.activity,
+      conversations: s.conversations,
+      previews: s.previews,
+      draftHistory: s.draftHistory,
+      checkpoints: s.checkpoints,
+      workflowRequests: s.workflowRequests,
+      jobReferences: s.jobReferences,
+      operations: s.operations,
+      syncConflicts: s.syncConflicts,
+      offlineQueue: s.offlineQueue,
+    }),
+    []
+  );
 
+  // Persist workspace snapshot to IndexedDB + localStorage (non-authoritative local cache)
+  useEffect(() => {
+    let cancelled = false;
+    const snapshot = buildSnapshotFromState(state, selectedProjectId, activeThreadId);
     durableLocalStore.saveSnapshot(snapshot).then((diag) => {
-      if (!cancelled) setStorageDiagnostics(diag);
+      if (!cancelled) {
+        setStorageDiagnostics(diag);
+        if (diag.quotaExceeded && diag.storageWarning) {
+          notify('warning', diag.storageWarning);
+        }
+      }
     });
 
     return () => {
       cancelled = true;
     };
-  }, [state]);
+  }, [state, selectedProjectId, activeThreadId, buildSnapshotFromState, notify]);
 
   const activeProject =
     state.projects.find((p) => p.id === selectedProjectId) ?? state.projects[0];
@@ -216,13 +362,239 @@ export default function App() {
     (activeProject && state.previews[activeProject.id]) ||
     foundryService.buildPreviewStateForProject(activeProject);
 
-  const handleSelectProject = (projectId: string) => {
-    setSelectedProjectId(projectId);
-    setReferencedElement(null);
-    const firstThread = state.conversations.find((t) => t.projectId === projectId);
-    if (firstThread) {
-      setActiveThreadId(firstThread.id);
+  const projectCheckpoints = state.checkpoints.filter(
+    (c) => c.projectId === activeProject?.id
+  );
+  const projectUndoStack = activeProject ? undoStacks[activeProject.id] ?? [] : [];
+  const projectRedoStack = activeProject ? redoStacks[activeProject.id] ?? [] : [];
+
+  const handleSelectProject = useCallback(
+    (projectId: string) => {
+      const now = new Date().toISOString();
+      setSelectedProjectId(projectId);
+      setReferencedElement(null);
+      setState((prev) => ({
+        ...prev,
+        revision: prev.revision + 1,
+        projects: prev.projects.map((p) =>
+          p.id === projectId ? { ...p, lastOpenedAt: now } : p
+        ),
+      }));
+      const firstThread = state.conversations.find((t) => t.projectId === projectId);
+      if (firstThread) {
+        setActiveThreadId(firstThread.id);
+      }
+    },
+    [state.conversations]
+  );
+
+  const handleUndoDraft = useCallback(() => {
+    if (!activeProject) return;
+    const stack = undoStacks[activeProject.id] ?? [];
+    if (stack.length === 0) return;
+    const latest = stack[stack.length - 1];
+
+    setUndoStacks((prev) => ({
+      ...prev,
+      [activeProject.id]: stack.slice(0, -1),
+    }));
+    setRedoStacks((prev) => ({
+      ...prev,
+      [activeProject.id]: [...(prev[activeProject.id] ?? []), latest],
+    }));
+
+    setState((prev) => ({
+      ...prev,
+      revision: prev.revision + 1,
+      previews: {
+        ...prev.previews,
+        [activeProject.id]: latest.before,
+      },
+      draftHistory: [
+        ...prev.draftHistory,
+        {
+          id: `hist-undo-${Date.now()}`,
+          projectId: activeProject.id,
+          summary: `Undo: ${latest.summary}`,
+          timestamp: new Date().toISOString(),
+          source: 'undo',
+          before: latest.after,
+          after: latest.before,
+        },
+      ],
+    }));
+    notify('info', `Reverted preview draft change: "${latest.summary}"`);
+  }, [activeProject, undoStacks, notify]);
+
+  const handleRedoDraft = useCallback(() => {
+    if (!activeProject) return;
+    const stack = redoStacks[activeProject.id] ?? [];
+    if (stack.length === 0) return;
+    const latest = stack[stack.length - 1];
+
+    setRedoStacks((prev) => ({
+      ...prev,
+      [activeProject.id]: stack.slice(0, -1),
+    }));
+    setUndoStacks((prev) => ({
+      ...prev,
+      [activeProject.id]: [...(prev[activeProject.id] ?? []), latest],
+    }));
+
+    setState((prev) => ({
+      ...prev,
+      revision: prev.revision + 1,
+      previews: {
+        ...prev.previews,
+        [activeProject.id]: latest.after,
+      },
+      draftHistory: [
+        ...prev.draftHistory,
+        {
+          id: `hist-redo-${Date.now()}`,
+          projectId: activeProject.id,
+          summary: `Redo: ${latest.summary}`,
+          timestamp: new Date().toISOString(),
+          source: 'redo',
+          before: latest.before,
+          after: latest.after,
+        },
+      ],
+    }));
+    notify('info', `Re-applied preview draft change: "${latest.summary}"`);
+  }, [activeProject, redoStacks, notify]);
+
+  // Global keyboard shortcuts (Ctrl/Cmd+K quick switcher, Alt+1..4 modes, Ctrl/Cmd+Z undo, Escape)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setQuickSwitcherOpen((prev) => !prev);
+        setQuickSwitchQuery('');
+        return;
+      }
+      if (e.key === 'Escape') {
+        setQuickSwitcherOpen(false);
+        return;
+      }
+      if (e.altKey && workspaceShell === 'studio') {
+        if (e.key === '1') {
+          e.preventDefault();
+          setWorkspaceMode('chat');
+        } else if (e.key === '2') {
+          e.preventDefault();
+          setWorkspaceMode('preview');
+        } else if (e.key === '3') {
+          e.preventDefault();
+          setWorkspaceMode('build');
+        } else if (e.key === '4') {
+          e.preventDefault();
+          setWorkspaceMode('verify');
+        }
+        return;
+      }
+      const target = e.target as HTMLElement | null;
+      const isTextInput =
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable);
+      if (!isTextInput && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+        if (projectUndoStack.length > 0) {
+          e.preventDefault();
+          handleUndoDraft();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [workspaceShell, projectUndoStack.length, handleUndoDraft]);
+
+  const handleRenameProject = (projectId: string, newName: string) => {
+    const now = new Date().toISOString();
+    setState((prev) => ({
+      ...prev,
+      revision: prev.revision + 1,
+      projects: prev.projects.map((p) =>
+        p.id === projectId ? { ...p, name: newName, updatedAt: now } : p
+      ),
+    }));
+    notify('success', `Renamed project to "${newName}".`);
+  };
+
+  const handleDuplicateProject = (projectId: string) => {
+    const source = state.projects.find((p) => p.id === projectId);
+    if (!source) return;
+    const copy = foundryService.duplicateProject(source);
+    const copyPreview = foundryService.buildPreviewStateForProject(copy);
+    const copyThread: ConversationThread = {
+      id: `thread-${copy.id}`,
+      projectId: copy.id,
+      title: `${copy.name} · Session 1`,
+      createdAt: copy.createdAt,
+      updatedAt: copy.createdAt,
+      messages: [
+        {
+          id: `msg-dup-${Date.now()}`,
+          role: 'assistant',
+          providerKind: chatProvider.providerKind,
+          content: `Duplicated local demo project from "${source.name}". Independent verification and release governance remain separated and unverified.`,
+          timestamp: copy.createdAt,
+          isSimulated: true,
+        },
+      ],
+    };
+
+    setState((prev) => ({
+      ...prev,
+      revision: prev.revision + 1,
+      projects: [copy, ...prev.projects],
+      previews: {
+        ...prev.previews,
+        [copy.id]: copyPreview,
+      },
+      conversations: [copyThread, ...prev.conversations],
+    }));
+    setSelectedProjectId(copy.id);
+    setActiveThreadId(copyThread.id);
+    notify('success', `Duplicated project as "${copy.name}".`);
+  };
+
+  const handleToggleArchiveProject = (projectId: string) => {
+    const target = state.projects.find((p) => p.id === projectId);
+    if (!target) return;
+    const nextArchived = !target.archived;
+    setState((prev) => ({
+      ...prev,
+      revision: prev.revision + 1,
+      projects: prev.projects.map((p) =>
+        p.id === projectId ? { ...p, archived: nextArchived } : p
+      ),
+    }));
+    if (nextArchived && selectedProjectId === projectId) {
+      const nextActive = state.projects.find((p) => p.id !== projectId && !p.archived);
+      if (nextActive) {
+        setSelectedProjectId(nextActive.id);
+      }
     }
+    notify(
+      'info',
+      nextArchived
+        ? `Archived project "${target.name}". Switch to Archived tab in sidebar to restore.`
+        : `Restored project "${target.name}".`
+    );
+  };
+
+  const handleRenameThread = (threadId: string, newTitle: string) => {
+    const now = new Date().toISOString();
+    setState((prev) => ({
+      ...prev,
+      revision: prev.revision + 1,
+      conversations: prev.conversations.map((t) =>
+        t.id === threadId ? { ...t, title: newTitle, updatedAt: now } : t
+      ),
+    }));
+    notify('success', `Renamed conversation to "${newTitle}".`);
   };
 
   const handleNewThread = () => {
@@ -317,9 +689,10 @@ export default function App() {
     } else {
       setActiveSection('workflows');
     }
+    notify('success', `Created synthetic project "${created.project.name}" and saved locally.`);
   };
 
-  const handleSendChatMessage = async (prompt: string) => {
+  const executeChatPrompt = async (prompt: string, selectedRef?: PreviewElementRef) => {
     if (!activeProject) return;
     const trimmed = prompt.trim();
     if (!trimmed) return;
@@ -330,14 +703,14 @@ export default function App() {
       role: 'user',
       content: trimmed,
       timestamp: now,
-      referencedElement: referencedElement ?? undefined,
+      referencedElement: selectedRef,
+      retryPrompt: trimmed,
       isSimulated: false,
     };
 
     const targetThreadId = activeThread?.id;
     let resolvedThreadId = targetThreadId;
 
-    // Immediately append user message to conversation
     setState((prev) => {
       let updatedConversations: ConversationThread[];
       if (targetThreadId && prev.conversations.some((t) => t.id === targetThreadId)) {
@@ -366,28 +739,35 @@ export default function App() {
       };
     });
 
-    const selectedRef = referencedElement ?? undefined;
-    setReferencedElement(null);
+    setLastRetryPrompt({ prompt: trimmed, referencedElement: selectedRef });
     setChatError(null);
+    setStreamingText('');
     setChatGenState('GENERATING');
 
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
     try {
-      const response = await chatProvider.generateReply(
-        {
-          prompt: trimmed,
-          project: activeProject,
-          preview: activePreview,
-          verifications: state.verifications,
-          referencedElement: selectedRef,
-          history: activeThread?.messages ?? [],
-        },
-        { signal: controller.signal }
-      );
+      const turnRequest = {
+        prompt: trimmed,
+        project: activeProject,
+        preview: activePreview,
+        verifications: state.verifications,
+        referencedElement: selectedRef,
+        history: activeThread?.messages ?? [],
+      };
+      const response = chatProvider.streamReply
+        ? await chatProvider.streamReply(
+            turnRequest,
+            (partial) => setStreamingText(partial),
+            { signal: controller.signal }
+          )
+        : await chatProvider.generateReply(turnRequest, { signal: controller.signal });
 
       setChatGenState('IDLE');
+      setStreamingText('');
+      setLastRetryPrompt(null);
+
       setState((prev) => {
         const nextRev = prev.revision + 1;
         const op = durableLocalStore.createOperation({
@@ -414,43 +794,99 @@ export default function App() {
         };
       });
     } catch (err) {
+      setStreamingText('');
       if (err instanceof DOMException && err.name === 'AbortError') {
         setChatGenState('CANCELLED');
+        notify('warning', 'Generation cancelled by operator.');
       } else {
+        const message =
+          err instanceof Error ? err.message : 'Chat provider failed to generate response.';
         setChatGenState('ERROR');
-        setChatError(
-          err instanceof Error ? err.message : 'Chat provider failed to generate response.'
-        );
+        setChatError(message);
+        notify('error', message);
       }
     } finally {
       abortControllerRef.current = null;
     }
   };
 
+  const handleSendChatMessage = (prompt: string) => {
+    const selectedRef = referencedElement ?? undefined;
+    setReferencedElement(null);
+    void executeChatPrompt(prompt, selectedRef);
+  };
+
+  const handleRetryLastPrompt = () => {
+    if (!lastRetryPrompt || chatGenState === 'GENERATING') return;
+    void executeChatPrompt(lastRetryPrompt.prompt, lastRetryPrompt.referencedElement);
+  };
+
   const handleCancelGeneration = () => {
     abortControllerRef.current?.abort();
+  };
+
+  const recordPreviewChange = (
+    projectId: string,
+    summary: string,
+    before: PreviewConfigState,
+    after: PreviewConfigState,
+    source: DraftHistoryEntry['source']
+  ): DraftHistoryEntry => {
+    const entry: DraftHistoryEntry = {
+      id: `hist-${Date.now()}`,
+      projectId,
+      summary,
+      timestamp: new Date().toISOString(),
+      source,
+      before,
+      after,
+    };
+    setUndoStacks((prev) => ({
+      ...prev,
+      [projectId]: [...(prev[projectId] ?? []), entry],
+    }));
+    setRedoStacks((prev) => ({
+      ...prev,
+      [projectId]: [],
+    }));
+    return entry;
   };
 
   const handleApproveDraftProposal = (messageId: string, proposalId: string) => {
     if (!activeProject) return;
     const now = new Date().toISOString();
+    const currentPreview =
+      state.previews[activeProject.id] ??
+      foundryService.buildPreviewStateForProject(activeProject);
+
+    let nextPreview = currentPreview;
+    let approvedSummary = 'Draft proposal';
+
+    for (const thread of state.conversations) {
+      for (const msg of thread.messages) {
+        if (msg.id === messageId && msg.draftProposal?.id === proposalId) {
+          approvedSummary = msg.draftProposal.summary;
+          nextPreview = foundryService.applyDraftProposalToPreview(
+            currentPreview,
+            msg.draftProposal
+          );
+        }
+      }
+    }
+
+    const histEntry = recordPreviewChange(
+      activeProject.id,
+      approvedSummary,
+      currentPreview,
+      nextPreview,
+      'proposal'
+    );
+
     setState((prev) => {
-      const currentPreview =
-        prev.previews[activeProject.id] ??
-        foundryService.buildPreviewStateForProject(activeProject);
-
-      let nextPreview = currentPreview;
-      let approvedSummary = 'Draft proposal';
-
       const updatedConversations = prev.conversations.map((thread) => ({
         ...thread,
         messages: thread.messages.map((msg) => {
           if (msg.id === messageId && msg.draftProposal?.id === proposalId) {
-            approvedSummary = msg.draftProposal.summary;
-            nextPreview = foundryService.applyDraftProposalToPreview(
-              currentPreview,
-              msg.draftProposal
-            );
             return {
               ...msg,
               draftProposal: {
@@ -482,9 +918,11 @@ export default function App() {
           ...prev.previews,
           [activeProject.id]: nextPreview,
         },
+        draftHistory: [...prev.draftHistory, histEntry],
         operations: [op, ...prev.operations],
       };
     });
+    notify('success', `Applied draft change to sandboxed Preview: "${approvedSummary}".`);
   };
 
   const handleRejectDraftProposal = (messageId: string, proposalId: string) => {
@@ -511,27 +949,89 @@ export default function App() {
         }),
       })),
     }));
+    notify('info', 'Draft change proposal rejected.');
+  };
+
+  const handleCreateCheckpoint = (name: string) => {
+    if (!activeProject) return;
+    const cp: ProjectCheckpoint = {
+      id: `cp-${Date.now()}`,
+      projectId: activeProject.id,
+      name,
+      createdAt: new Date().toISOString(),
+      preview: activePreview,
+    };
+    setState((prev) => ({
+      ...prev,
+      revision: prev.revision + 1,
+      checkpoints: [cp, ...prev.checkpoints],
+    }));
+    notify('success', `Saved checkpoint "${name}" locally.`);
+  };
+
+  const handleRestoreCheckpoint = (checkpointId: string) => {
+    if (!activeProject) return;
+    const cp = state.checkpoints.find((c) => c.id === checkpointId);
+    if (!cp) return;
+    const histEntry = recordPreviewChange(
+      activeProject.id,
+      `Restore checkpoint "${cp.name}"`,
+      activePreview,
+      cp.preview,
+      'checkpoint-restore'
+    );
+    setState((prev) => ({
+      ...prev,
+      revision: prev.revision + 1,
+      previews: {
+        ...prev.previews,
+        [activeProject.id]: cp.preview,
+      },
+      draftHistory: [...prev.draftHistory, histEntry],
+    }));
+    notify('success', `Restored preview checkpoint "${cp.name}".`);
+  };
+
+  const handleResetPreview = () => {
+    if (!activeProject) return;
+    const baseline = foundryService.buildPreviewStateForProject(activeProject);
+    const histEntry = recordPreviewChange(
+      activeProject.id,
+      'Reset preview to project baseline',
+      activePreview,
+      baseline,
+      'reset'
+    );
+    setState((prev) => ({
+      ...prev,
+      revision: prev.revision + 1,
+      previews: {
+        ...prev.previews,
+        [activeProject.id]: baseline,
+      },
+      draftHistory: [...prev.draftHistory, histEntry],
+    }));
+    notify('info', 'Reset sandboxed preview to baseline (reversible with Undo).');
   };
 
   const handleAdvanceSimulation = (runId: string) => {
-    setState((prev) => {
-      const targetRun = prev.runs.find((r) => r.id === runId);
-      if (!targetRun) return prev;
-      const targetProject = prev.projects.find((p) => p.id === targetRun.projectId);
-      if (!targetProject) return prev;
+    const targetRun = state.runs.find((r) => r.id === runId);
+    if (!targetRun) return;
+    const targetProject = state.projects.find((p) => p.id === targetRun.projectId);
+    if (!targetProject) return;
 
-      const { updatedRun, updatedProject, updatedVerifications, activity } =
-        foundryService.advanceSimulationStep(targetRun, targetProject, prev.verifications);
+    const { updatedRun, updatedProject, updatedVerifications, activity } =
+      foundryService.advanceSimulationStep(targetRun, targetProject, state.verifications);
 
-      return {
-        ...prev,
-        revision: prev.revision + 1,
-        runs: prev.runs.map((r) => (r.id === updatedRun.id ? updatedRun : r)),
-        projects: prev.projects.map((p) => (p.id === updatedProject.id ? updatedProject : p)),
-        verifications: updatedVerifications,
-        activity: [activity, ...prev.activity],
-      };
-    });
+    setState((prev) => ({
+      ...prev,
+      revision: prev.revision + 1,
+      runs: prev.runs.map((r) => (r.id === updatedRun.id ? updatedRun : r)),
+      projects: prev.projects.map((p) => (p.id === updatedProject.id ? updatedProject : p)),
+      verifications: updatedVerifications,
+      activity: [activity, ...prev.activity],
+    }));
+    notify('info', activity.summary);
   };
 
   const handleStageWorkflowIntent = (
@@ -555,6 +1055,20 @@ export default function App() {
       requestedAt: now,
     };
 
+    const queueItem: OfflineQueueItem = {
+      id: `oq-wf-${Date.now()}`,
+      projectId: project.id,
+      kind: 'WORKFLOW_DISPATCH',
+      label: `Staged intent: ${project.name} (${run?.currentStageId ?? 'intake'})`,
+      targetEndpoint: `http://127.0.0.1:8080/api/w/uor-offline-foundry/jobs/run/f/${project.workflowId}`,
+      createdAt: now,
+      status: 'STAGED_LOCAL',
+      revision: state.revision + 1,
+      idempotencyKey,
+      retryRequiresConfirmation: true,
+      autoReplayPermitted: false,
+    };
+
     setState((prev) => {
       const nextRev = prev.revision + 1;
       const op = durableLocalStore.createOperation({
@@ -568,10 +1082,20 @@ export default function App() {
         ...prev,
         revision: nextRev,
         workflowRequests: [request, ...prev.workflowRequests],
+        offlineQueue: [queueItem, ...prev.offlineQueue],
         operations: [op, ...prev.operations],
       };
     });
+    notify('info', `Staged local workflow intent (${idempotencyKey}). Auto-replay disabled.`);
     return true;
+  };
+
+  const handleRetryQueuedItem = (_queueItemId: string, confirmed: boolean) => {
+    if (!confirmed) return;
+    notify(
+      'error',
+      'Retry blocked (fail-closed): Windmill runtime (http://127.0.0.1:8080) is NOT CONNECTED in DEMO mode.'
+    );
   };
 
   const handlePreviewAirGappedExport = () =>
@@ -606,7 +1130,40 @@ export default function App() {
         operations: [op, ...prev.operations],
       };
     });
+    notify('success', `Downloaded allowlisted air-gapped metadata bundle: ${filename}`);
     return filename;
+  };
+
+  const handleExportLocalBackup = (): string => {
+    const snapshot = buildSnapshotFromState(state, selectedProjectId, activeThreadId);
+    const filename = durableLocalStore.downloadWorkspaceBackup(snapshot);
+    notify('success', `Saved full local workspace backup: ${filename}`);
+    return filename;
+  };
+
+  const handleRestoreLocalBackup = (rawJson: string): { ok: boolean; message: string } => {
+    const result = durableLocalStore.parseWorkspaceBackup(rawJson, createDefaultSnapshot);
+    if (!result.ok) {
+      notify('error', result.error);
+      return { ok: false, message: result.error };
+    }
+    const restoredState = buildSeedState(result.snapshot);
+    setState(restoredState);
+    if (
+      restoredState.selectedProjectId &&
+      restoredState.projects.some((p) => p.id === restoredState.selectedProjectId)
+    ) {
+      setSelectedProjectId(restoredState.selectedProjectId);
+    }
+    if (
+      restoredState.activeThreadId &&
+      restoredState.conversations.some((t) => t.id === restoredState.activeThreadId)
+    ) {
+      setActiveThreadId(restoredState.activeThreadId);
+    }
+    const msg = `Restored local workspace backup (${restoredState.projects.length} projects).`;
+    notify('success', msg);
+    return { ok: true, message: msg };
   };
 
   const handleGenerateAdvisory = (
@@ -640,9 +1197,27 @@ export default function App() {
     setWorkspaceShell('advanced');
   };
 
+  const dismissFirstRunGuide = () => {
+    setShowFirstRunGuide(false);
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem(FIRST_RUN_DISMISSED_KEY, '1');
+      } catch {
+        // Ignore restricted storage
+      }
+    }
+  };
+
   const blockedReleaseCount = state.approvals.filter(
     (a) => a.disposition === 'BLOCKED' || a.disposition === 'DEFERRED'
   ).length;
+
+  const quickSwitchProjects = state.projects.filter(
+    (p) =>
+      !p.archived &&
+      (!quickSwitchQuery.trim() ||
+        p.name.toLowerCase().includes(quickSwitchQuery.trim().toLowerCase()))
+  );
 
   return (
     <div className="min-h-screen bg-[#0B0F17] text-[#E6EDF5] flex">
@@ -654,10 +1229,14 @@ export default function App() {
             threads={state.conversations}
             activeThreadId={activeThread?.id ?? ''}
             onSelectProject={handleSelectProject}
+            onRenameProject={handleRenameProject}
+            onDuplicateProject={handleDuplicateProject}
+            onToggleArchiveProject={handleToggleArchiveProject}
             onSelectThread={(threadId) => {
               setActiveThreadId(threadId);
               setWorkspaceMode('chat');
             }}
+            onRenameThread={handleRenameThread}
             onNewThread={handleNewThread}
             onOpenNewProject={() => setIntakeModalOpen(true)}
             onOpenAdvancedConsole={() => openAdvancedSection('overview')}
@@ -672,6 +1251,7 @@ export default function App() {
               onSelectMode={setWorkspaceMode}
               integrationMode={state.integrationMode}
               connectivityProfile={state.connectivityProfile}
+              browserOnline={browserOnline}
               onSelectConnectivityProfile={(profile) =>
                 setState((prev) => ({
                   ...prev,
@@ -680,9 +1260,13 @@ export default function App() {
                 }))
               }
               operations={state.operations}
+              offlineQueue={state.offlineQueue}
               storageDiagnostics={storageDiagnostics}
               onPreviewAirGappedExport={handlePreviewAirGappedExport}
               onExportAirGappedBundle={handleExportAirGappedBundle}
+              onExportLocalBackup={handleExportLocalBackup}
+              onRestoreLocalBackup={handleRestoreLocalBackup}
+              onRetryQueuedItem={handleRetryQueuedItem}
               onClearOperations={() =>
                 setState((prev) => ({
                   ...prev,
@@ -690,21 +1274,67 @@ export default function App() {
                   operations: [],
                 }))
               }
+              onOpenQuickSwitcher={() => {
+                setQuickSwitcherOpen(true);
+                setQuickSwitchQuery('');
+              }}
               onOpenMobileMenu={() => setMobileMenuOpen(true)}
               onOpenAdvancedSection={openAdvancedSection}
             />
 
+            {operatorNotice && (
+              <div
+                role="status"
+                aria-live="polite"
+                className={`px-4 lg:px-6 py-2 border-b text-xs flex items-center justify-between gap-3 ${
+                  operatorNotice.tone === 'error'
+                    ? 'bg-rose-950/35 border-rose-500/35 text-rose-200'
+                    : operatorNotice.tone === 'warning'
+                      ? 'bg-amber-950/30 border-amber-500/35 text-amber-200'
+                      : operatorNotice.tone === 'success'
+                        ? 'bg-emerald-950/30 border-emerald-500/35 text-emerald-200'
+                        : 'bg-[#0F1726] border-slate-800 text-slate-300'
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  {operatorNotice.tone === 'success' ? (
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" aria-hidden="true" />
+                  ) : operatorNotice.tone === 'warning' || operatorNotice.tone === 'error' ? (
+                    <ShieldAlert className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  ) : (
+                    <Info className="w-3.5 h-3.5 text-blue-400 shrink-0" aria-hidden="true" />
+                  )}
+                  <span className="truncate">{operatorNotice.message}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setOperatorNotice(null)}
+                  className="text-slate-400 hover:text-white p-0.5 shrink-0"
+                  aria-label="Dismiss notification"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
             <main className="flex-1 p-4 lg:p-5 max-w-[1600px] w-full mx-auto">
               {workspaceMode === 'chat' && (
-                <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 h-[calc(100vh-6rem)] min-h-[560px]">
+                <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 h-[calc(100vh-7rem)] min-h-[560px]">
                   <div className="xl:col-span-7 h-full min-h-0">
                     <ChatPanel
                       project={activeProject}
+                      preview={activePreview}
                       thread={activeThread}
                       integrationMode={state.integrationMode}
                       providerKind={chatProvider.providerKind}
                       generationState={chatGenState}
                       generationError={chatError}
+                      streamingText={streamingText}
+                      lastRetryPrompt={lastRetryPrompt?.prompt ?? null}
+                      autosavedAt={storageDiagnostics.lastSavedAt}
+                      storageWarning={storageDiagnostics.storageWarning}
+                      showFirstRunGuide={showFirstRunGuide}
+                      onDismissFirstRunGuide={dismissFirstRunGuide}
                       referencedElement={referencedElement}
                       onClearReferencedElement={() => setReferencedElement(null)}
                       onDismissError={() => {
@@ -712,10 +1342,12 @@ export default function App() {
                         setChatError(null);
                       }}
                       onSendMessage={handleSendChatMessage}
+                      onRetryLastPrompt={handleRetryLastPrompt}
                       onCancelGeneration={handleCancelGeneration}
                       onApproveDraftProposal={handleApproveDraftProposal}
                       onRejectDraftProposal={handleRejectDraftProposal}
                       onSwitchMode={setWorkspaceMode}
+                      onOpenNewProject={() => setIntakeModalOpen(true)}
                     />
                   </div>
                   <div className="xl:col-span-5 h-full min-h-0">
@@ -727,6 +1359,14 @@ export default function App() {
                       artifacts={state.artifacts}
                       verifications={state.verifications}
                       selectedElement={referencedElement}
+                      canUndo={projectUndoStack.length > 0}
+                      canRedo={projectRedoStack.length > 0}
+                      checkpoints={projectCheckpoints}
+                      onUndoDraft={handleUndoDraft}
+                      onRedoDraft={handleRedoDraft}
+                      onCreateCheckpoint={handleCreateCheckpoint}
+                      onRestoreCheckpoint={handleRestoreCheckpoint}
+                      onResetPreview={handleResetPreview}
                       onSelectElement={(el) => setReferencedElement(el)}
                       onSwitchMode={setWorkspaceMode}
                     />
@@ -735,7 +1375,7 @@ export default function App() {
               )}
 
               {workspaceMode === 'preview' && (
-                <div className="h-[calc(100vh-6rem)] min-h-[560px]">
+                <div className="h-[calc(100vh-7rem)] min-h-[560px]">
                   <LivePreviewPanel
                     project={activeProject}
                     preview={activePreview}
@@ -744,6 +1384,14 @@ export default function App() {
                     artifacts={state.artifacts}
                     verifications={state.verifications}
                     selectedElement={referencedElement}
+                    canUndo={projectUndoStack.length > 0}
+                    canRedo={projectRedoStack.length > 0}
+                    checkpoints={projectCheckpoints}
+                    onUndoDraft={handleUndoDraft}
+                    onRedoDraft={handleRedoDraft}
+                    onCreateCheckpoint={handleCreateCheckpoint}
+                    onRestoreCheckpoint={handleRestoreCheckpoint}
+                    onResetPreview={handleResetPreview}
                     onSelectElement={(el) => {
                       setReferencedElement(el);
                       if (el) setWorkspaceMode('chat');
@@ -880,6 +1528,62 @@ export default function App() {
             </main>
           </div>
         </>
+      )}
+
+      {/* Quick Project Switcher Modal (Ctrl/Cmd + K) */}
+      {quickSwitcherOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center pt-20 p-4 bg-black/75"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Quick project switcher"
+        >
+          <div className="w-full max-w-md bg-[#111827] border border-slate-700 rounded-lg overflow-hidden shadow-2xl">
+            <div className="p-3 border-b border-slate-800 flex items-center gap-2">
+              <Search className="w-4 h-4 text-slate-400 shrink-0" aria-hidden="true" />
+              <input
+                type="text"
+                value={quickSwitchQuery}
+                onChange={(e) => setQuickSwitchQuery(e.target.value)}
+                placeholder="Jump to project..."
+                aria-label="Filter projects in quick switcher"
+                autoFocus
+                className="flex-1 bg-transparent text-xs text-slate-100 placeholder-slate-500 focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => setQuickSwitcherOpen(false)}
+                className="p-1 text-slate-400 hover:text-white"
+                aria-label="Close quick switcher"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <ul className="max-h-64 overflow-y-auto divide-y divide-slate-800/70">
+              {quickSwitchProjects.length === 0 ? (
+                <li className="p-4 text-xs text-slate-500 text-center">No matching projects.</li>
+              ) : (
+                quickSwitchProjects.map((p) => (
+                  <li key={p.id}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleSelectProject(p.id);
+                        setQuickSwitcherOpen(false);
+                      }}
+                      className="w-full text-left px-4 py-2.5 text-xs hover:bg-slate-800/70 flex items-center justify-between gap-2"
+                    >
+                      <span className="text-slate-100 font-medium truncate">{p.name}</span>
+                      <span className="font-mono text-[10px] text-slate-400 shrink-0">
+                        {p.productFamily}
+                      </span>
+                    </button>
+                  </li>
+                ))
+              )}
+            </ul>
+          </div>
+        </div>
       )}
 
       <IntakeModal

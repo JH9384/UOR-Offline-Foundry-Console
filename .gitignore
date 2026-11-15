@@ -6,3 +6,7 @@ coverage/
 *.log
 .env*
 !.env.example
+playwright-report/
+test-results/
+uor_foundry.raw_app/src/
+uor_foundry.raw_app/index.css

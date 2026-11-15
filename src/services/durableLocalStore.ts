@@ -5,11 +5,13 @@ import {
   ArtifactProvenanceRecord,
   ConnectivityProfile,
   ConversationThread,
+  DraftHistoryEntry,
   DurableOperation,
   IntegrationMode,
   OfflineQueueItem,
   PreviewConfigState,
   ProductFamily,
+  ProjectCheckpoint,
   ProjectLifecycleStatus,
   ProjectRecord,
   SanitizedAirGappedArtifactRef,
@@ -20,8 +22,10 @@ import {
   WindmillExecutionRequest,
   WindmillJobRecord,
   WorkflowRun,
+  WorkspaceBackupBundle,
 } from '../types/foundry';
 
+export const LEGACY_V1_STORAGE_KEY = 'uor_foundry_console_state_v1';
 export const LEGACY_STORAGE_KEY = 'uor_foundry_console_state_v2';
 export const DURABLE_IDB_NAME = 'uor_foundry_durable_v1';
 export const DURABLE_IDB_STORE = 'workspace_snapshots';
@@ -35,6 +39,8 @@ export interface DurableWorkspaceSnapshot {
   persistenceNotice: string;
   integrationMode: IntegrationMode;
   connectivityProfile: ConnectivityProfile;
+  selectedProjectId?: string;
+  activeThreadId?: string;
   projects: ProjectRecord[];
   runs: WorkflowRun[];
   verifications: VerificationSuiteRecord[];
@@ -44,6 +50,8 @@ export interface DurableWorkspaceSnapshot {
   activity: ActivityEvent[];
   conversations: ConversationThread[];
   previews: Record<string, PreviewConfigState>;
+  draftHistory?: DraftHistoryEntry[];
+  checkpoints?: ProjectCheckpoint[];
   workflowRequests: WindmillExecutionRequest[];
   jobReferences: WindmillJobRecord[];
   operations: DurableOperation[];
@@ -56,6 +64,9 @@ export interface DurableStorageDiagnostics {
   indexedDbSupported: boolean;
   lastSavedAt?: string;
   operationCount: number;
+  quotaExceeded?: boolean;
+  storageWarning?: string;
+  estimatedBytes?: number;
   autoReplayPermitted: false;
   isAuthoritativeDatabase: false;
 }
@@ -122,6 +133,10 @@ export const DURABLE_EXPORT_ALLOWLIST_SCHEMA = Object.freeze({
     'authoritativeDatabase',
     'persistenceNotice',
     'connectivityProfile',
+    'selectedProjectId',
+    'activeThreadId',
+    'draftHistory',
+    'checkpoints',
     'apiCredentials',
     'credentials',
     'secrets',
@@ -398,9 +413,17 @@ export class DurableLocalStore {
   loadSyncFallback(): Partial<DurableWorkspaceSnapshot> | null {
     if (typeof window === 'undefined') return null;
     try {
-      const raw = window.localStorage.getItem(LEGACY_STORAGE_KEY);
-      if (!raw) return null;
-      return JSON.parse(raw) as Partial<DurableWorkspaceSnapshot>;
+      const v2Raw = window.localStorage.getItem(LEGACY_STORAGE_KEY);
+      if (v2Raw) {
+        const migrated = migrateWorkspaceSnapshot(v2Raw);
+        return migrated.snapshot;
+      }
+      const v1Raw = window.localStorage.getItem(LEGACY_V1_STORAGE_KEY);
+      if (v1Raw) {
+        const migrated = migrateWorkspaceSnapshot(v1Raw);
+        return migrated.snapshot;
+      }
+      return null;
     } catch {
       return null;
     }
@@ -415,7 +438,8 @@ export class DurableLocalStore {
         const store = tx.objectStore(DURABLE_IDB_STORE);
         const req = store.get(DURABLE_SNAPSHOT_KEY);
         req.onsuccess = () => {
-          resolve((req.result as Partial<DurableWorkspaceSnapshot> | undefined) ?? null);
+          const migrated = migrateWorkspaceSnapshot(req.result);
+          resolve(migrated.snapshot);
         };
         req.onerror = () => resolve(null);
       } catch {
@@ -425,11 +449,31 @@ export class DurableLocalStore {
   }
 
   async saveSnapshot(snapshot: DurableWorkspaceSnapshot): Promise<DurableStorageDiagnostics> {
-    if (typeof window !== 'undefined') {
+    let serialized = '';
+    let quotaExceeded = false;
+    let storageWarning: string | undefined;
+
+    try {
+      serialized = JSON.stringify(snapshot);
+    } catch {
+      storageWarning = 'Failed to serialize workspace snapshot.';
+    }
+
+    if (typeof window !== 'undefined' && serialized) {
       try {
-        window.localStorage.setItem(LEGACY_STORAGE_KEY, JSON.stringify(snapshot));
-      } catch {
-        // Ignore storage quota restrictions in constrained sandboxes
+        window.localStorage.setItem(LEGACY_STORAGE_KEY, serialized);
+      } catch (err) {
+        const isQuota =
+          (err instanceof DOMException &&
+            (err.name === 'QuotaExceededError' || err.code === 22 || err.code === 1014)) ||
+          (err instanceof Error && /quota/i.test(err.message));
+        if (isQuota) {
+          quotaExceeded = true;
+          storageWarning =
+            'Browser localStorage quota exceeded. Export a manual local backup or trim old checkpoints/history.';
+        } else {
+          storageWarning = 'Unable to write localStorage fallback cache.';
+        }
       }
     }
 
@@ -442,7 +486,14 @@ export class DurableLocalStore {
           const store = tx.objectStore(DURABLE_IDB_STORE);
           store.put(snapshot, DURABLE_SNAPSHOT_KEY);
           tx.oncomplete = () => resolve(true);
-          tx.onerror = () => resolve(false);
+          tx.onerror = () => {
+            if (tx.error && /quota/i.test(tx.error.name)) {
+              quotaExceeded = true;
+              storageWarning =
+                'Browser IndexedDB storage quota exceeded. Export a manual local backup before clearing space.';
+            }
+            resolve(false);
+          };
         } catch {
           resolve(false);
         }
@@ -458,10 +509,306 @@ export class DurableLocalStore {
       indexedDbSupported: typeof window !== 'undefined' && 'indexedDB' in window,
       lastSavedAt: snapshot.updatedAt,
       operationCount: snapshot.operations.length,
+      quotaExceeded,
+      storageWarning,
+      estimatedBytes: serialized.length,
       autoReplayPermitted: false,
       isAuthoritativeDatabase: false,
     };
   }
+
+  buildWorkspaceBackup(snapshot: DurableWorkspaceSnapshot): WorkspaceBackupBundle {
+    const now = new Date().toISOString();
+    return {
+      schema: 'uor.foundry.workspace-backup.v1',
+      backupId: `bkp-${now.slice(0, 10)}-${Math.random().toString(36).slice(2, 6)}`,
+      exportedAt: now,
+      backupClassification: 'LOCAL_BROWSER_BACKUP_NON_AUTHORITATIVE',
+      warning:
+        'Full local browser workspace backup (includes conversations, drafts, and checkpoints). Distinct from sanitized air-gapped transfer bundles (uor.foundry.air-gapped-bundle.v2).',
+      snapshot: snapshot as unknown as Record<string, unknown>,
+    };
+  }
+
+  downloadWorkspaceBackup(snapshot: DurableWorkspaceSnapshot): string {
+    const bundle = this.buildWorkspaceBackup(snapshot);
+    const filename = `uor-foundry-local-backup-${bundle.backupId}.json`;
+    if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], {
+        type: 'application/json;charset=utf-8',
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }
+    return filename;
+  }
+
+  parseWorkspaceBackup(
+    rawJson: string,
+    buildFallback: () => DurableWorkspaceSnapshot
+  ):
+    | { ok: true; snapshot: DurableWorkspaceSnapshot; warnings: string[] }
+    | { ok: false; error: string } {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawJson);
+    } catch {
+      return { ok: false, error: 'Backup file is not valid JSON.' };
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      return { ok: false, error: 'Backup file payload must be a JSON object.' };
+    }
+    const obj = parsed as Record<string, unknown>;
+    if (obj.schema === 'uor.foundry.air-gapped-bundle.v2') {
+      return {
+        ok: false,
+        error:
+          'Rejected: Air-gapped metadata export bundles (uor.foundry.air-gapped-bundle.v2) have imports disabled and cannot be restored as local workspace backups.',
+      };
+    }
+    if (obj.schema !== 'uor.foundry.workspace-backup.v1' || !obj.snapshot || typeof obj.snapshot !== 'object') {
+      return {
+        ok: false,
+        error: 'Unsupported backup schema. Expected "uor.foundry.workspace-backup.v1".',
+      };
+    }
+    const recovered = recoverWorkspaceSnapshot(obj.snapshot, buildFallback);
+    return { ok: true, snapshot: recovered.snapshot, warnings: recovered.warnings };
+  }
+}
+
+export function migrateWorkspaceSnapshot(raw: unknown): {
+  snapshot: Partial<DurableWorkspaceSnapshot> | null;
+  migratedFromVersion: number | null;
+  warnings: string[];
+} {
+  const warnings: string[] = [];
+  if (raw == null) {
+    return { snapshot: null, migratedFromVersion: null, warnings };
+  }
+
+  let candidate: unknown = raw;
+  if (typeof raw === 'string') {
+    try {
+      candidate = JSON.parse(raw);
+    } catch {
+      warnings.push('Corrupted local JSON snapshot ignored; recovering with default seed.');
+      return { snapshot: null, migratedFromVersion: null, warnings };
+    }
+  }
+
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    warnings.push('Malformed snapshot structure; expected object.');
+    return { snapshot: null, migratedFromVersion: null, warnings };
+  }
+
+  const record = candidate as Record<string, unknown>;
+  const sourceVersion =
+    typeof record.schemaVersion === 'number' ? record.schemaVersion : 1;
+
+  if (sourceVersion < 2) {
+    warnings.push(`Migrated legacy v${sourceVersion} browser workspace snapshot to schema v2.`);
+  }
+
+  const filterValidArray = <T>(
+    value: unknown,
+    predicate: (item: unknown) => item is T,
+    label: string
+  ): T[] | undefined => {
+    if (value === undefined) return undefined;
+    if (!Array.isArray(value)) {
+      warnings.push(`Invalid "${label}" array in stored snapshot; reset to defaults.`);
+      return undefined;
+    }
+    const valid = value.filter(predicate);
+    if (valid.length !== value.length) {
+      warnings.push(`Dropped ${value.length - valid.length} malformed entries from "${label}".`);
+    }
+    return valid;
+  };
+
+  const isObj = (v: unknown): v is Record<string, unknown> =>
+    Boolean(v && typeof v === 'object' && !Array.isArray(v));
+
+  const projects = filterValidArray(
+    record.projects,
+    (v): v is ProjectRecord => isObj(v) && typeof v.id === 'string' && typeof v.name === 'string',
+    'projects'
+  );
+  const conversations = filterValidArray(
+    record.conversations,
+    (v): v is ConversationThread =>
+      isObj(v) &&
+      typeof v.id === 'string' &&
+      typeof v.projectId === 'string' &&
+      Array.isArray(v.messages),
+    'conversations'
+  );
+  const runs = filterValidArray(
+    record.runs,
+    (v): v is WorkflowRun => isObj(v) && typeof v.id === 'string' && Array.isArray(v.stages),
+    'runs'
+  );
+  const verifications = filterValidArray(
+    record.verifications,
+    (v): v is VerificationSuiteRecord => isObj(v) && typeof v.id === 'string',
+    'verifications'
+  );
+  const artifacts = filterValidArray(
+    record.artifacts,
+    (v): v is ArtifactProvenanceRecord => isObj(v) && typeof v.id === 'string',
+    'artifacts'
+  );
+  const approvals = filterValidArray(
+    record.approvals,
+    (v): v is ApprovalDecisionRecord => isObj(v) && typeof v.id === 'string',
+    'approvals'
+  );
+  const advisories = filterValidArray(
+    record.advisories,
+    (v): v is AiAdvisoryEntry => isObj(v) && typeof v.id === 'string',
+    'advisories'
+  );
+  const activity = filterValidArray(
+    record.activity,
+    (v): v is ActivityEvent => isObj(v) && typeof v.id === 'string',
+    'activity'
+  );
+  const draftHistory = filterValidArray(
+    record.draftHistory,
+    (v): v is DraftHistoryEntry => isObj(v) && typeof v.id === 'string' && typeof v.projectId === 'string',
+    'draftHistory'
+  );
+  const checkpoints = filterValidArray(
+    record.checkpoints,
+    (v): v is ProjectCheckpoint => isObj(v) && typeof v.id === 'string' && typeof v.projectId === 'string',
+    'checkpoints'
+  );
+  const operations = filterValidArray(
+    record.operations,
+    (v): v is DurableOperation => isObj(v) && typeof v.operationId === 'string',
+    'operations'
+  );
+  const offlineQueue = filterValidArray(
+    record.offlineQueue,
+    (v): v is OfflineQueueItem => isObj(v) && typeof v.id === 'string',
+    'offlineQueue'
+  )?.map((item) => ({
+    ...item,
+    autoReplayPermitted: false as const,
+    retryRequiresConfirmation: true as const,
+  }));
+
+  const migrated: Partial<DurableWorkspaceSnapshot> = {
+    schemaVersion: 2,
+    revision:
+      typeof record.revision === 'number' && Number.isFinite(record.revision) && record.revision >= 1
+        ? record.revision
+        : 1,
+    updatedAt:
+      typeof record.updatedAt === 'string' ? record.updatedAt : new Date().toISOString(),
+    authoritativeDatabase: false,
+    persistenceNotice:
+      typeof record.persistenceNotice === 'string'
+        ? record.persistenceNotice
+        : 'Browser IndexedDB/localStorage cache only.',
+    integrationMode: 'DEMO',
+    connectivityProfile:
+      record.connectivityProfile === 'AIR_GAPPED_TRANSFER' ||
+      record.connectivityProfile === 'OFFLINE_ONLY' ||
+      record.connectivityProfile === 'LOCAL_CONNECTED' ||
+      record.connectivityProfile === 'ONLINE_AUTHORIZED'
+        ? record.connectivityProfile
+        : 'OFFLINE_ONLY',
+    selectedProjectId:
+      typeof record.selectedProjectId === 'string' ? record.selectedProjectId : undefined,
+    activeThreadId:
+      typeof record.activeThreadId === 'string' ? record.activeThreadId : undefined,
+    ...(projects ? { projects } : {}),
+    ...(runs ? { runs } : {}),
+    ...(verifications ? { verifications } : {}),
+    ...(artifacts ? { artifacts } : {}),
+    ...(approvals ? { approvals } : {}),
+    ...(advisories ? { advisories } : {}),
+    ...(activity ? { activity } : {}),
+    ...(conversations ? { conversations } : {}),
+    ...(isObj(record.previews)
+      ? { previews: record.previews as Record<string, PreviewConfigState> }
+      : {}),
+    ...(draftHistory ? { draftHistory } : {}),
+    ...(checkpoints ? { checkpoints } : {}),
+    ...(Array.isArray(record.workflowRequests)
+      ? { workflowRequests: record.workflowRequests as WindmillExecutionRequest[] }
+      : {}),
+    ...(Array.isArray(record.jobReferences)
+      ? { jobReferences: record.jobReferences as WindmillJobRecord[] }
+      : {}),
+    ...(operations ? { operations } : {}),
+    ...(Array.isArray(record.syncConflicts)
+      ? { syncConflicts: record.syncConflicts as SyncConflictRecord[] }
+      : {}),
+    ...(offlineQueue ? { offlineQueue } : {}),
+  };
+
+  return { snapshot: migrated, migratedFromVersion: sourceVersion, warnings };
+}
+
+export function recoverWorkspaceSnapshot(
+  raw: unknown,
+  buildFallback: () => DurableWorkspaceSnapshot
+): {
+  snapshot: DurableWorkspaceSnapshot;
+  recovered: boolean;
+  warnings: string[];
+} {
+  const fallback = buildFallback();
+  const migrated = migrateWorkspaceSnapshot(raw);
+  if (!migrated.snapshot) {
+    return {
+      snapshot: fallback,
+      recovered: raw != null,
+      warnings: migrated.warnings,
+    };
+  }
+
+  const s = migrated.snapshot;
+  return {
+    snapshot: {
+      schemaVersion: 2,
+      revision: s.revision ?? fallback.revision,
+      updatedAt: s.updatedAt ?? fallback.updatedAt,
+      authoritativeDatabase: false,
+      persistenceNotice: fallback.persistenceNotice,
+      integrationMode: 'DEMO',
+      connectivityProfile: s.connectivityProfile ?? fallback.connectivityProfile,
+      selectedProjectId: s.selectedProjectId ?? fallback.selectedProjectId,
+      activeThreadId: s.activeThreadId ?? fallback.activeThreadId,
+      projects: s.projects && s.projects.length > 0 ? s.projects : fallback.projects,
+      runs: s.runs ?? fallback.runs,
+      verifications: s.verifications ?? fallback.verifications,
+      artifacts: s.artifacts ?? fallback.artifacts,
+      approvals: s.approvals ?? fallback.approvals,
+      advisories: s.advisories ?? fallback.advisories,
+      activity: s.activity ?? fallback.activity,
+      conversations: s.conversations ?? fallback.conversations,
+      previews: s.previews ?? fallback.previews,
+      draftHistory: s.draftHistory ?? fallback.draftHistory ?? [],
+      checkpoints: s.checkpoints ?? fallback.checkpoints ?? [],
+      workflowRequests: s.workflowRequests ?? fallback.workflowRequests,
+      jobReferences: s.jobReferences ?? fallback.jobReferences,
+      operations: s.operations ?? fallback.operations,
+      syncConflicts: s.syncConflicts ?? fallback.syncConflicts,
+      offlineQueue: s.offlineQueue ?? fallback.offlineQueue,
+    },
+    recovered: migrated.warnings.length > 0,
+    warnings: migrated.warnings,
+  };
 }
 
 export const durableLocalStore = new DurableLocalStore();

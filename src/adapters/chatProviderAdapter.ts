@@ -35,6 +35,12 @@ export interface ChatProviderAdapter {
     request: ChatTurnRequest,
     options?: { signal?: AbortSignal }
   ): Promise<ChatTurnResponse>;
+
+  streamReply?(
+    request: ChatTurnRequest,
+    onChunk: (partialContent: string) => void,
+    options?: { signal?: AbortSignal }
+  ): Promise<ChatTurnResponse>;
 }
 
 function waitWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
@@ -72,12 +78,29 @@ export class MockPreviewChatProvider implements ChatProviderAdapter {
   readonly label = 'DEMO · Mock Chat Provider';
   readonly isLiveModelConnected = false;
 
+  async streamReply(
+    request: ChatTurnRequest,
+    onChunk: (partialContent: string) => void,
+    options?: { signal?: AbortSignal }
+  ): Promise<ChatTurnResponse> {
+    const response = await this.generateReply(request, options);
+    const words = response.assistantMessage.content.split(' ');
+    const step = Math.max(2, Math.ceil(words.length / 4));
+    let built = '';
+    for (let i = 0; i < words.length; i += step) {
+      await waitWithAbort(55, options?.signal);
+      built = words.slice(0, i + step).join(' ');
+      onChunk(built);
+    }
+    return response;
+  }
+
   async generateReply(
     request: ChatTurnRequest,
     options?: { signal?: AbortSignal }
   ): Promise<ChatTurnResponse> {
     // Realistic short async turn delay so generating state & cancellation are testable
-    await waitWithAbort(320, options?.signal);
+    await waitWithAbort(220, options?.signal);
 
     const now = new Date().toISOString();
     const trimmed = request.prompt.trim();

@@ -1,0 +1,74 @@
+# UOR Offline Foundry Console
+
+**Repository:** `https://github.com/JH9384/UOR-Offline-Foundry-Console`  
+**Target Windmill Workspace:** `uor-offline-foundry` (`http://127.0.0.1:8080`)  
+**Workspace Modes:** `Chat | Preview | Build | Verify & Release`
+
+An offline-first, AI Studio-style engineering workspace built over five explicitly separated layers, preserving all UOR verification policies, provenance bindings, Windmill execution adapters, and fail-closed human release governance.
+
+---
+
+## 1. Local Development & Quality Commands
+
+```bash
+npm install
+npm run dev               # Start local Vite dev server (port 3000)
+npm run typecheck         # Run TypeScript check across workspace
+npm run test:security     # Run security regression & release gate tests
+npm run test              # Run full unit test suite (security + offline reliability)
+npm run test:e2e          # Run headless Playwright Studio browser E2E suite
+npm run build             # Build production Vite bundle (dist/)
+npm run windmill:prepare  # Sync src/ (excluding tests) into uor_foundry.raw_app/
+npm run windmill:validate # Validate Windmill raw_app dependency closure & boundaries
+npm run check             # Execute typecheck + test + build
+```
+
+GitHub Actions CI (`.github/workflows/ci.yml`) runs `typecheck`, `test:security`, `test`, `build`, `windmill:validate`, and Playwright `test:e2e` on pull requests and pushes to `main`.
+
+---
+
+## 2. Five-Layer Architecture
+
+1. **Studio Presentation** (`src/components/`, `src/components/studio/`, `src/components/views/`): Conversational workspace, element-referenced live sandbox preview, simulated build stage inspector, independent verify/release panels, and Advanced Console views.
+2. **Project, Conversation & Durable Local Services** (`src/services/foundryService.ts`, `src/services/durableLocalStore.ts`, `src/services/syncService.ts`): Project creation/templates, conversation threads, approval-gated diffs, undo/redo + named checkpoints, IndexedDB (`uor_foundry_durable_v1`) + `localStorage` (`uor_foundry_console_state_v2`) caching, and allowlisted exports.
+3. **AI & Preview Adapters** (`src/adapters/chatProviderAdapter.ts`, `src/adapters/artifactPreviewAdapter.ts`): Abortable chunked streaming (`MockPreviewChatProvider` in `DEMO`; `WindmillLmStudioChatProvider` fail-closed contract for `LOCAL`), plus sandboxed previews (`DEMO | DRAFT | BUILT | VERIFIED | UNAVAILABLE`).
+4. **Windmill Execution Services & Packaging** (`src/adapters/windmillAdapter.ts`, `src/adapters/windmillExecutionService.ts`, `uor_foundry.raw_app/`): Targets workspace `uor-offline-foundry` without hardcoded tokens or direct browser Windmill calls.
+5. **Independent Verification & Release Authority** (`src/services/verificationAuthorityService.ts`): Versioned policy enforcement (`VERIFICATION_POLICIES`), evidence authenticity checks, digest/revision binding, and strict human `APPROVED_FOR_RELEASE` (`PRODUCTION_RELEASE`) governance.
+
+---
+
+## 3. Offline Persistence, Backups & Air-Gapped Exports
+
+- **Local Workspace State vs Asset Caching**:
+  - Workspace state (projects, conversations, previews, checkpoints, durable operations, offline queue, active selection) persists locally in IndexedDB (`uor_foundry_durable_v1`) with `localStorage` (`uor_foundry_console_state_v2`) fallback.
+  - Legacy v1/unversioned `localStorage` snapshots migrate automatically to schema v2; malformed or partial JSON snapshots recover safely while retaining valid records.
+  - `QuotaExceededError` conditions are detected and surfaced in both Chat autosave status and the Runtime boundary panel without crashing.
+  - Note: Static application bundles (`index.html`, JS/CSS assets) are cached only by normal HTTP/Vite build delivery; no experimental Service Worker cache is installed in `DEMO`.
+- **Manual Local Backup vs Air-Gapped Transfer Export vs Recovery**:
+  - **Local Workspace Backup (`uor.foundry.workspace-backup.v1`)**: Full manual browser recovery JSON (projects, conversations, previews, checkpoints). Kept strictly separate from air-gapped exports.
+  - **Sanitized Air-Gapped Export (`uor.foundry.air-gapped-bundle.v2`)**: Deny-by-default allowlisted plaintext metadata only. Automatically strips API credentials, chat bodies, drafts, checkpoints, raw artifacts, local paths, and unknown properties, and normalizes hostile control characters/prototype keys. Explicitly rejected by the local backup restore loader (`UNENCRYPTED_UNSIGNED_METADATA_ONLY`; imports remain disabled).
+  - **Queued Local Intents**: Tagged with `idempotencyKey` and `retryRequiresConfirmation: true`. Automatic replay on reconnect is disabled; operators must confirm manual retry checks.
+
+---
+
+## 4. Security & Verification Policies
+
+- **Fail-Closed Verification**: Simulated `PASS` suites, untrusted issuers, duplicate authorities, stale suite versions, missing mandatory policy suites, and SHA-256 digest or source revision mismatches force `NOT VERIFIED` and block release.
+- **Unambiguous Release Authorization**: `APPROVED_FOR_TEST_SIMULATION`, `PENDING`, `DEFERRED`, `BLOCKED`, `REJECTED`, and `APPROVED_FOR_QUALIFICATION` never satisfy production release. Production release requires an explicit `APPROVED_FOR_RELEASE` record with `PRODUCTION_RELEASE` scope bound to exact project ID, artifact SHA-256 digest, source revision, policy version, mandatory evidence IDs, timestamp, and authenticated human approver identity.
+- **Browser Offline vs Runtime Status**: `navigator.onLine` indicates only browser network status and never equates to Windmill (`http://127.0.0.1:8080`) or LM Studio availability.
+
+---
+
+## 5. Windmill Packaging & Integration Boundaries
+
+- **Option A (Vite/React + Authenticated Local Adapter)**: Uses `VITE_AUTHENTICATED_LOCAL_PROXY`; locked until endpoint and auth validation succeed.
+- **Option B (Windmill Full-Code App — `uor_foundry.raw_app/`)**: Private (`public: false`, `guests: false`), self-contained via `npm run windmill:prepare` (syncing `src/` without test files into `uor_foundry.raw_app/src/`) and `wmill.contract.ts`. Packaging status inside AI Studio is **`PREPARED — LOCAL VALIDATION REQUIRED`** until `wmill app dev` generates `./wmill.ts` inside your Mac Studio `uor-offline-foundry` workspace.
+- **LM Studio Advisory Boundary**: Routed exclusively through Windmill runnable `backend/local_ai_advisory.ts`; direct browser inference and privileged repository/shell actions remain disabled.
+
+---
+
+## 6. Known Limitations in Browser Preview
+
+- Live Windmill (`http://127.0.0.1:8080`), LM Studio inference, Lean/UOR compilers, Git writes, and cryptographic signing are unavailable in browser `DEMO` mode.
+- Web Fonts referenced in `index.html` gracefully fall back to system sans/monospace fonts when running completely offline.
+- Full-detail engineering documentation lives in [`docs/INTEGRATION_BOUNDARIES.md`](docs/INTEGRATION_BOUNDARIES.md).

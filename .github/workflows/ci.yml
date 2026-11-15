@@ -1,0 +1,39 @@
+name: CI Quality & Security Gates
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    name: Typecheck, Security Tests, Build & Windmill Package Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies cleanly
+        run: npm ci
+
+      - name: TypeScript typecheck
+        run: npm run typecheck
+
+      - name: Mandatory security regression tests
+        run: npm run test:security
+
+      - name: Full unit & offline reliability tests
+        run: npm run test
+
+      - name: Production Vite build
+        run: npm run build
+
+      - name: Validate Windmill full-code app package closure
+        run: npm run windmill:validate

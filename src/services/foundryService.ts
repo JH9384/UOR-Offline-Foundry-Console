@@ -14,15 +14,59 @@ import {
   ArtifactProvenanceRecord,
   ConversationMessage,
   DraftChangeProposal,
+  DraftDiffField,
   EngineeringIntakePayload,
   OfflineQueueItem,
   PreviewConfigState,
   PreviewElementRef,
   ProjectRecord,
+  ProjectTemplateSpec,
   VerificationSuiteRecord,
   WorkflowRun,
   WorkflowStageId,
 } from '../types/foundry';
+
+export const PROJECT_TEMPLATES: ProjectTemplateSpec[] = [
+  {
+    id: 'application',
+    title: 'Application Development',
+    productFamily: 'application',
+    componentId: 'prismpm-calculator',
+    workflowId: 'wf-prismpm-delivery',
+    defaultNamePrefix: 'PrismPM App Target',
+    purpose: 'Assemble and simulate a closed .lex.tex application build targeting .holo v4 packaging.',
+    declaredInputs: 'examples/Calculator/src/Calculator.lex.tex, examples/Calculator/lexlean.lock',
+    environmentDeclaration: 'Sanitized offline workspace (no local credentials or raw controller logs)',
+    sourceRevision: 'prismpm/demo@ee207ff1',
+    description: 'Uses PrismPM Calculator & HOLOVIEW closed-model pipeline with Forge & Browser gates.',
+  },
+  {
+    id: 'formal-verification',
+    title: 'Formal Verification',
+    productFamily: 'formal-verification',
+    componentId: 'lexlean-compiler',
+    workflowId: 'wf-lexlean-formal',
+    defaultNamePrefix: 'LexLean Proof Target',
+    purpose: 'Evaluate Lean 4.32.1 kernel proof discharge, axiom audit, and determinism checks in simulation.',
+    declaredInputs: 'src/Spec/KernelInvariant.lex.tex, lexlean.lock',
+    environmentDeclaration: 'Sanitized offline proof container targeting Mac Studio runner',
+    sourceRevision: 'lexlean/demo@0.4.0',
+    description: 'Uses LexLean Compiler formal proof workflow with independent kernel & Forge gates.',
+  },
+  {
+    id: 'scientific-computation',
+    title: 'Scientific Computation',
+    productFamily: 'scientific-computation',
+    componentId: 'uor-framework-ontology',
+    workflowId: 'wf-uor-intake-standard',
+    defaultNamePrefix: 'UOR Scientific Probe',
+    purpose: 'Model deterministic ring-substrate computations and ontology schema checks before local dispatch.',
+    declaredInputs: 'ontology/uor_ring.json, experiments/probe_manifest.json',
+    environmentDeclaration: 'Sanitized scientific simulation environment; Mac Studio runner disconnected',
+    sourceRevision: 'uor-framework/demo@0.4.0',
+    description: 'Uses UOR Framework Ontology schema intake with full 7-gate qualification holds.',
+  },
+];
 
 export interface IntakeValidationErrors {
   projectName?: string;
@@ -484,6 +528,65 @@ export class FoundryService {
       ...proposal.patch,
       customWidgets: updatedWidgets,
       lastUpdatedAt: now,
+    };
+  }
+
+  computeDraftDiff(
+    before: PreviewConfigState,
+    proposal: DraftChangeProposal
+  ): DraftDiffField[] {
+    const after = this.applyDraftProposalToPreview(before, proposal);
+    const diffs: DraftDiffField[] = [];
+    const fieldSpecs: Array<{ key: keyof PreviewConfigState; label: string }> = [
+      { key: 'appTitle', label: 'Preview Title' },
+      { key: 'subtitle', label: 'Subtitle' },
+      { key: 'layoutDensity', label: 'Layout Density' },
+      { key: 'primaryActionLabel', label: 'Primary Action Label' },
+      { key: 'showProvenanceFooter', label: 'Provenance Footer' },
+      { key: 'showMonospaceOutputs', label: 'Monospace Outputs' },
+      { key: 'draftBannerNote', label: 'Banner Note' },
+    ];
+    for (const spec of fieldSpecs) {
+      const bVal = String(before[spec.key] ?? '—');
+      const aVal = String(after[spec.key] ?? '—');
+      if (bVal !== aVal) {
+        diffs.push({
+          field: String(spec.key),
+          label: spec.label,
+          before: bVal,
+          after: aVal,
+        });
+      }
+    }
+    if (proposal.addWidget) {
+      diffs.push({
+        field: 'customWidgets',
+        label: `Widget (${proposal.addWidget.label})`,
+        before: `${before.customWidgets.length} widget(s)`,
+        after: `${after.customWidgets.length} widget(s): "${proposal.addWidget.value}"`,
+      });
+    }
+    return diffs;
+  }
+
+  duplicateProject(source: ProjectRecord): ProjectRecord {
+    const now = new Date().toISOString();
+    return {
+      ...source,
+      id: `proj-copy-${Math.random().toString(36).slice(2, 7)}`,
+      name: `${source.name} (Copy)`,
+      lifecycleStatus: 'INTAKE',
+      createdAt: now,
+      updatedAt: now,
+      lastOpenedAt: now,
+      archived: false,
+      isSyntheticDemo: true,
+      releaseBlockedReasons: [
+        'Duplicated local demo workspace; independent verification and human release authorization must be evaluated separately.',
+        ...source.releaseBlockedReasons.filter(
+          (r) => !r.startsWith('Duplicated local demo workspace')
+        ),
+      ],
     };
   }
 

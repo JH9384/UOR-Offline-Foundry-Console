@@ -130,6 +130,25 @@ export interface WorkflowRun {
   stages: StageExecutionRecord[];
 }
 
+export type ProjectTemplateId =
+  | 'application'
+  | 'formal-verification'
+  | 'scientific-computation';
+
+export interface ProjectTemplateSpec {
+  id: ProjectTemplateId;
+  title: string;
+  productFamily: ProductFamily;
+  componentId: EngineeringComponentId;
+  workflowId: string;
+  defaultNamePrefix: string;
+  purpose: string;
+  declaredInputs: string;
+  environmentDeclaration: string;
+  sourceRevision: string;
+  description: string;
+}
+
 export interface ProjectRecord {
   id: string;
   name: string;
@@ -143,6 +162,8 @@ export interface ProjectRecord {
   lifecycleStatus: ProjectLifecycleStatus;
   createdAt: string;
   updatedAt: string;
+  lastOpenedAt?: string;
+  archived?: boolean;
   isSyntheticDemo: boolean;
   acceptancePolicySchema: string;
   releaseBlockedReasons: string[];
@@ -445,6 +466,32 @@ export interface PreviewConfigState {
 
 export type DraftProposalStatus = 'PENDING_REVIEW' | 'APPROVED' | 'REJECTED';
 
+export interface DraftDiffField {
+  field: string;
+  label: string;
+  before: string;
+  after: string;
+}
+
+export interface DraftHistoryEntry {
+  id: string;
+  projectId: string;
+  summary: string;
+  timestamp: string;
+  source: 'proposal' | 'checkpoint-restore' | 'undo' | 'redo' | 'reset';
+  before: PreviewConfigState;
+  after: PreviewConfigState;
+}
+
+export interface ProjectCheckpoint {
+  id: string;
+  projectId: string;
+  name: string;
+  createdAt: string;
+  note?: string;
+  preview: PreviewConfigState;
+}
+
 export interface DraftChangeProposal {
   id: string;
   summary: string;
@@ -475,6 +522,10 @@ export interface ConversationMessage {
     targetMode: WorkspaceMode;
   };
   errorDetail?: string;
+  failed?: boolean;
+  cancelled?: boolean;
+  streaming?: boolean;
+  retryPrompt?: string;
   isSimulated: boolean;
 }
 
@@ -626,7 +677,17 @@ export interface OfflineQueueItem {
   createdAt: string;
   status: 'QUEUED_LOCAL' | 'SIMULATED_LOCAL' | 'STAGED_LOCAL';
   revision?: number;
+  idempotencyKey?: string;
+  retryRequiresConfirmation?: true;
   autoReplayPermitted?: false;
 }
 
+export interface WorkspaceBackupBundle {
+  schema: 'uor.foundry.workspace-backup.v1';
+  backupId: string;
+  exportedAt: string;
+  backupClassification: 'LOCAL_BROWSER_BACKUP_NON_AUTHORITATIVE';
+  warning: string;
+  snapshot: Record<string, unknown>;
+}
 

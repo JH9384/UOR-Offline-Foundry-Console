@@ -3,18 +3,23 @@ import {
   AlertCircle,
   ArrowRight,
   Check,
+  Copy,
   Crosshair,
   Loader2,
+  RotateCcw,
+  Save,
   Send,
   Square,
   Wrench,
   X,
 } from 'lucide-react';
+import { foundryService } from '../../services/foundryService';
 import {
   ChatGenerationState,
   ChatProviderKind,
   ConversationThread,
   IntegrationMode,
+  PreviewConfigState,
   PreviewElementRef,
   ProjectRecord,
   WorkspaceMode,
@@ -23,38 +28,57 @@ import { StatusTag } from '../StatusTag';
 
 interface ChatPanelProps {
   project: ProjectRecord;
+  preview: PreviewConfigState;
   thread?: ConversationThread;
   integrationMode: IntegrationMode;
   providerKind: ChatProviderKind;
   generationState: ChatGenerationState;
   generationError: string | null;
+  streamingText?: string;
+  lastRetryPrompt?: string | null;
+  autosavedAt?: string;
+  storageWarning?: string;
+  showFirstRunGuide: boolean;
+  onDismissFirstRunGuide: () => void;
   referencedElement: PreviewElementRef | null;
   onClearReferencedElement: () => void;
   onDismissError: () => void;
   onSendMessage: (prompt: string) => void;
+  onRetryLastPrompt: () => void;
   onCancelGeneration: () => void;
   onApproveDraftProposal: (messageId: string, proposalId: string) => void;
   onRejectDraftProposal: (messageId: string, proposalId: string) => void;
   onSwitchMode: (mode: WorkspaceMode) => void;
+  onOpenNewProject: () => void;
 }
 
 export const ChatPanel: React.FC<ChatPanelProps> = ({
   project,
+  preview,
   thread,
   integrationMode,
   providerKind,
   generationState,
   generationError,
+  streamingText,
+  lastRetryPrompt,
+  autosavedAt,
+  storageWarning,
+  showFirstRunGuide,
+  onDismissFirstRunGuide,
   referencedElement,
   onClearReferencedElement,
   onDismissError,
   onSendMessage,
+  onRetryLastPrompt,
   onCancelGeneration,
   onApproveDraftProposal,
   onRejectDraftProposal,
   onSwitchMode,
+  onOpenNewProject,
 }) => {
   const [input, setInput] = useState('');
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const isGenerating = generationState === 'GENERATING';
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -62,6 +86,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     if (!input.trim() || isGenerating) return;
     onSendMessage(input.trim());
     setInput('');
+  };
+
+  const handleCopy = async (id: string, text: string) => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      }
+      setCopiedId(id);
+      setTimeout(() => {
+        setCopiedId((prev) => (prev === id ? null : prev));
+      }, 1600);
+    } catch {
+      setCopiedId(id);
+    }
   };
 
   const starterSuggestions = referencedElement
@@ -76,6 +114,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       ];
 
   const messages = thread?.messages ?? [];
+  const pendingDraftCount = messages.filter(
+    (m) => m.draftProposal && (m.draftProposal.status ?? (m.draftProposal.applied ? 'APPROVED' : 'PENDING_REVIEW')) === 'PENDING_REVIEW'
+  ).length;
+
   const providerLabel =
     providerKind === 'MOCK_PREVIEW_PROVIDER'
       ? 'Mock Chat Provider (Browser Sandbox)'
@@ -93,10 +135,88 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             {providerLabel} · Future target: LM Studio via Windmill
           </div>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2.5 shrink-0">
+          <span
+            className={`hidden sm:inline-flex items-center gap-1 text-[11px] font-mono ${
+              storageWarning ? 'text-amber-300' : 'text-slate-400'
+            }`}
+            title={storageWarning ?? 'Workspace auto-saved to browser local storage'}
+          >
+            <Save className="w-3 h-3" aria-hidden="true" />
+            <span>
+              {storageWarning
+                ? 'Storage warning'
+                : autosavedAt
+                  ? `Saved ${new Date(autosavedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                  : 'Autosaved'}
+            </span>
+          </span>
           <StatusTag value={integrationMode} />
         </div>
       </div>
+
+      {/* First-run operator guide */}
+      {showFirstRunGuide && (
+        <div className="px-5 py-2.5 bg-[#0D1422] border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div className="text-slate-300 flex flex-wrap items-center gap-1.5">
+            <span className="font-medium text-blue-300">Workflow:</span>
+            <button
+              type="button"
+              onClick={onOpenNewProject}
+              className="underline decoration-slate-600 hover:text-white"
+            >
+              Create a project
+            </button>
+            <span className="text-slate-600">&rarr;</span>
+            <span>Chat</span>
+            <span className="text-slate-600">&rarr;</span>
+            <button
+              type="button"
+              onClick={() => onSwitchMode('preview')}
+              className="underline decoration-slate-600 hover:text-white"
+            >
+              Preview
+            </button>
+            <span className="text-slate-600">&rarr;</span>
+            <button
+              type="button"
+              onClick={() => onSwitchMode('build')}
+              className="underline decoration-slate-600 hover:text-white"
+            >
+              Build
+            </button>
+            <span className="text-slate-600">&rarr;</span>
+            <button
+              type="button"
+              onClick={() => onSwitchMode('verify')}
+              className="underline decoration-slate-600 hover:text-white"
+            >
+              Verify
+            </button>
+            <span className="text-slate-500 ml-1">
+              (Adapters &amp; boundaries live in Advanced Workspace)
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={onDismissFirstRunGuide}
+            className="text-slate-500 hover:text-slate-200 p-1"
+            aria-label="Dismiss workflow guide"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Unapplied Draft Changes Banner */}
+      {pendingDraftCount > 0 && (
+        <div className="px-5 py-2 bg-amber-950/25 border-b border-amber-500/30 flex items-center justify-between gap-2 text-xs text-amber-200">
+          <span>
+            {pendingDraftCount} unapplied draft {pendingDraftCount === 1 ? 'change' : 'changes'} awaiting your review before updating Preview.
+          </span>
+          <span className="font-mono text-[11px] text-amber-300">REVIEW REQUIRED</span>
+        </div>
+      )}
 
       {/* Conversation Stream */}
       <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
@@ -116,13 +236,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
               msg.draftProposal?.status ??
               (msg.draftProposal?.applied ? 'APPROVED' : 'PENDING_REVIEW');
 
+            const diffRows = msg.draftProposal
+              ? foundryService.computeDraftDiff(preview, msg.draftProposal)
+              : [];
+
             return (
               <div
                 key={msg.id}
                 className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
               >
                 <div
-                  className={`max-w-[90%] rounded-lg px-4 py-3 text-sm leading-relaxed space-y-2.5 ${
+                  className={`max-w-[92%] rounded-lg px-4 py-3 text-sm leading-relaxed space-y-2.5 ${
                     isUser
                       ? 'bg-blue-600/20 border border-blue-500/35 text-slate-100'
                       : 'bg-[#141C2B] border border-slate-800 text-slate-200'
@@ -136,12 +260,27 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                           ? 'LM Studio (Windmill)'
                           : 'Foundry Assistant (DEMO Mock)'}
                     </span>
-                    <span className="tabular-nums">
-                      {new Date(msg.timestamp).toLocaleTimeString([], {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="tabular-nums">
+                        {new Date(msg.timestamp).toLocaleTimeString([], {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(msg.id, msg.content)}
+                        className="p-0.5 text-slate-500 hover:text-slate-200 rounded"
+                        aria-label="Copy message content"
+                        title="Copy message"
+                      >
+                        {copiedId === msg.id ? (
+                          <Check className="w-3 h-3 text-emerald-400" />
+                        ) : (
+                          <Copy className="w-3 h-3" />
+                        )}
+                      </button>
+                    </div>
                   </div>
 
                   {msg.referencedElement && (
@@ -153,7 +292,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
                   <p className="text-[13px] whitespace-pre-wrap">{msg.content}</p>
 
-                  {/* Approval-gated Draft Change Proposal */}
+                  {/* Approval-gated Draft Change Proposal with Before/After Diff */}
                   {msg.draftProposal && (
                     <div className="p-3 bg-[#0B0F17] border border-slate-700/80 rounded-md space-y-2.5">
                       <div className="flex items-center justify-between gap-2">
@@ -163,6 +302,30 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         </span>
                         <StatusTag value={proposalStatus} />
                       </div>
+
+                      {diffRows.length > 0 && (
+                        <div className="border border-slate-800 rounded overflow-hidden text-[11px] font-mono">
+                          {diffRows.map((d) => (
+                            <div
+                              key={d.field}
+                              className="px-2.5 py-1.5 border-b last:border-b-0 border-slate-800/80 space-y-1"
+                            >
+                              <div className="text-slate-400 font-sans text-[10px] uppercase tracking-wider">
+                                {d.label}
+                              </div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                                <div className="px-2 py-0.5 rounded bg-rose-950/25 text-rose-200 truncate">
+                                  - {d.before}
+                                </div>
+                                <div className="px-2 py-0.5 rounded bg-emerald-950/25 text-emerald-200 truncate">
+                                  + {d.after}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
                       <p className="text-[11px] text-slate-400 leading-relaxed">
                         {msg.draftProposal.authorityNote}
                       </p>
@@ -224,33 +387,52 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         )}
 
         {isGenerating && (
-          <div className="flex items-center justify-between gap-3 px-4 py-3 bg-[#141C2B] border border-blue-500/35 rounded-lg text-xs text-slate-200 max-w-[90%]">
-            <div className="flex items-center gap-2">
-              <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin" aria-hidden="true" />
-              <span>Generating async response ({providerLabel})...</span>
+          <div className="max-w-[92%] px-4 py-3 bg-[#141C2B] border border-blue-500/35 rounded-lg text-xs text-slate-200 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin" aria-hidden="true" />
+                <span>Generating response ({providerLabel})...</span>
+              </div>
+              <button
+                type="button"
+                onClick={onCancelGeneration}
+                className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-mono text-rose-300 border border-rose-500/35 hover:bg-rose-950/30 rounded"
+              >
+                <Square className="w-3 h-3" aria-hidden="true" />
+                <span>Stop</span>
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={onCancelGeneration}
-              className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-mono text-rose-300 border border-rose-500/35 hover:bg-rose-950/30 rounded"
-            >
-              <Square className="w-3 h-3" aria-hidden="true" />
-              <span>Cancel</span>
-            </button>
+            {streamingText && (
+              <p className="text-[13px] text-slate-300 whitespace-pre-wrap leading-relaxed border-t border-slate-800 pt-2">
+                {streamingText}
+              </p>
+            )}
           </div>
         )}
 
         {generationState === 'CANCELLED' && (
-          <div className="px-3.5 py-2 bg-amber-950/20 border border-amber-500/30 rounded text-xs text-amber-200 flex items-center justify-between gap-2">
+          <div className="px-3.5 py-2.5 bg-amber-950/20 border border-amber-500/30 rounded text-xs text-amber-200 flex flex-wrap items-center justify-between gap-2">
             <span>Generation cancelled by operator before completion.</span>
-            <button
-              type="button"
-              onClick={onDismissError}
-              className="text-slate-400 hover:text-white"
-              aria-label="Dismiss cancellation notice"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
+            <div className="flex items-center gap-2">
+              {lastRetryPrompt && (
+                <button
+                  type="button"
+                  onClick={onRetryLastPrompt}
+                  className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium bg-amber-900/40 hover:bg-amber-900/60 border border-amber-500/40 rounded text-amber-100"
+                >
+                  <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                  <span>Retry</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onDismissError}
+                className="text-slate-400 hover:text-white p-1"
+                aria-label="Dismiss cancellation notice"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
         )}
 
@@ -260,14 +442,26 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
               <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" aria-hidden="true" />
               <span>{generationError}</span>
             </div>
-            <button
-              type="button"
-              onClick={onDismissError}
-              className="text-slate-400 hover:text-white shrink-0"
-              aria-label="Dismiss error"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              {lastRetryPrompt && (
+                <button
+                  type="button"
+                  onClick={onRetryLastPrompt}
+                  className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium bg-rose-900/40 hover:bg-rose-900/60 border border-rose-500/40 rounded text-rose-100"
+                >
+                  <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                  <span>Retry</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onDismissError}
+                className="text-slate-400 hover:text-white p-1"
+                aria-label="Dismiss error"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -324,6 +518,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 }
               }
             }}
+            aria-label="Conversation prompt"
             placeholder={
               referencedElement
                 ? `Describe the change for "${referencedElement.label}"...`

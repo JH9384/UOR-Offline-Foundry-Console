@@ -1,10 +1,23 @@
 import React, { useState } from 'react';
 import {
+  AlertTriangle,
+  BookmarkPlus,
+  Check,
+  Copy,
   Crosshair,
+  History,
+  Loader2,
   Lock,
+  Maximize2,
+  Minimize2,
   Monitor,
   Play,
+  Redo2,
+  RefreshCw,
+  RotateCcw,
   Smartphone,
+  Tablet,
+  Undo2,
 } from 'lucide-react';
 import { artifactPreviewAdapter } from '../../adapters/artifactPreviewAdapter';
 import { ENGINEERING_COMPONENTS } from '../../data/seedFoundryData';
@@ -14,6 +27,7 @@ import {
   IntegrationMode,
   PreviewConfigState,
   PreviewElementRef,
+  ProjectCheckpoint,
   ProjectRecord,
   VerificationSuiteRecord,
   WorkflowRun,
@@ -29,6 +43,14 @@ interface LivePreviewPanelProps {
   artifacts: ArtifactProvenanceRecord[];
   verifications: VerificationSuiteRecord[];
   selectedElement: PreviewElementRef | null;
+  canUndo: boolean;
+  canRedo: boolean;
+  checkpoints: ProjectCheckpoint[];
+  onUndoDraft: () => void;
+  onRedoDraft: () => void;
+  onCreateCheckpoint: (name: string) => void;
+  onRestoreCheckpoint: (checkpointId: string) => void;
+  onResetPreview: () => void;
   onSelectElement: (element: PreviewElementRef | null) => void;
   onSwitchMode: (mode: WorkspaceMode) => void;
 }
@@ -50,12 +72,26 @@ export const LivePreviewPanel: React.FC<LivePreviewPanelProps> = ({
   artifacts,
   verifications,
   selectedElement,
+  canUndo,
+  canRedo,
+  checkpoints,
+  onUndoDraft,
+  onRedoDraft,
+  onCreateCheckpoint,
+  onRestoreCheckpoint,
+  onResetPreview,
   onSelectElement,
   onSwitchMode,
 }) => {
   const [previewKind, setPreviewKind] = useState<ArtifactPreviewKind>('ui-build');
   const [inspectMode, setInspectMode] = useState(false);
-  const [viewport, setViewport] = useState<'desktop' | 'compact'>('desktop');
+  const [viewport, setViewport] = useState<'desktop' | 'tablet' | 'mobile'>('desktop');
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [checkpointOpen, setCheckpointOpen] = useState(false);
+  const [checkpointName, setCheckpointName] = useState('');
+  const [copiedOutput, setCopiedOutput] = useState(false);
 
   // Interactive simulated states for UI Build sandbox
   const [calcInputA, setCalcInputA] = useState('14');
@@ -126,23 +162,69 @@ export const LivePreviewPanel: React.FC<LivePreviewPanelProps> = ({
     }
   };
 
+  const triggerSimulatedRefresh = () => {
+    setPreviewError(null);
+    setPreviewLoading(true);
+    setTimeout(() => {
+      setPreviewLoading(false);
+    }, 220);
+  };
+
+  const copyCurrentOutput = async () => {
+    const payload =
+      previewKind === 'ui-build'
+        ? simResult ?? `Ready. Click "${preview.primaryActionLabel}" to test in sandbox.`
+        : previewKind === 'json-artifact' && artifactPreview.jsonPayload
+          ? JSON.stringify(artifactPreview.jsonPayload, null, 2)
+          : previewKind === 'validation-report' && artifactPreview.reportItems
+            ? JSON.stringify(artifactPreview.reportItems, null, 2)
+            : artifactPreview.contentText ?? artifactPreview.title;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(payload);
+      }
+    } catch {
+      // Fallback confirmation state for restricted sandboxes
+    }
+    setCopiedOutput(true);
+    setTimeout(() => setCopiedOutput(false), 1600);
+  };
+
+  const handleSaveCheckpoint = (e: React.FormEvent) => {
+    e.preventDefault();
+    const label = checkpointName.trim() || `Checkpoint ${checkpoints.length + 1}`;
+    onCreateCheckpoint(label);
+    setCheckpointName('');
+  };
+
+  const viewportWidthClass =
+    viewport === 'mobile'
+      ? 'max-w-[360px]'
+      : viewport === 'tablet'
+        ? 'max-w-[680px]'
+        : 'max-w-3xl';
+
   const spacingClass =
     preview.layoutDensity === 'compact' ? 'p-3.5 space-y-3' : 'p-5 space-y-4';
 
+  const containerClass = isFullscreen
+    ? 'fixed inset-0 z-50 flex flex-col bg-[#0F1520] border border-slate-800 overflow-hidden'
+    : 'flex flex-col h-full min-h-[540px] bg-[#0F1520] border border-slate-800/80 rounded-lg overflow-hidden';
+
   return (
-    <section className="flex flex-col h-full min-h-[540px] bg-[#0F1520] border border-slate-800/80 rounded-lg overflow-hidden">
+    <section className={containerClass} aria-label="Live preview panel">
       {/* Preview Toolbar */}
       <div className="px-4 py-2.5 border-b border-slate-800/80 space-y-2 shrink-0">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <span className="text-xs font-medium text-slate-200">Preview</span>
-            <StatusTag value={artifactPreview.status} />
+            <StatusTag value={previewError ? 'UNAVAILABLE' : artifactPreview.status} />
             <span className="text-[11px] font-mono text-slate-500 truncate hidden sm:inline">
               {artifactPreview.originLabel}
             </span>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             {previewKind === 'ui-build' && (
               <button
                 type="button"
@@ -160,12 +242,52 @@ export const LivePreviewPanel: React.FC<LivePreviewPanelProps> = ({
               </button>
             )}
 
+            {/* Undo / Redo / Checkpoints */}
+            <div className="flex items-center p-0.5 bg-[#090D14] border border-slate-800 rounded">
+              <button
+                type="button"
+                disabled={!canUndo}
+                onClick={onUndoDraft}
+                className="p-1 text-slate-300 hover:text-white disabled:text-slate-600 disabled:cursor-not-allowed rounded"
+                aria-label="Undo preview draft change"
+                title="Undo draft change"
+              >
+                <Undo2 className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                disabled={!canRedo}
+                onClick={onRedoDraft}
+                className="p-1 text-slate-300 hover:text-white disabled:text-slate-600 disabled:cursor-not-allowed rounded"
+                aria-label="Redo preview draft change"
+                title="Redo draft change"
+              >
+                <Redo2 className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setCheckpointOpen((prev) => !prev)}
+                aria-expanded={checkpointOpen}
+                className={`px-1.5 py-1 text-[11px] rounded inline-flex items-center gap-1 ${
+                  checkpointOpen ? 'bg-slate-800 text-white' : 'text-slate-300 hover:text-white'
+                }`}
+                aria-label="Manage project checkpoints"
+                title="Checkpoints"
+              >
+                <History className="w-3 h-3" aria-hidden="true" />
+                <span className="hidden md:inline tabular-nums">
+                  Checkpoints ({checkpoints.length})
+                </span>
+              </button>
+            </div>
+
+            {/* Responsive Viewports */}
             <div className="hidden sm:flex items-center p-0.5 bg-[#090D14] border border-slate-800 rounded">
               <button
                 type="button"
                 onClick={() => setViewport('desktop')}
                 className={`p-1 rounded ${
-                  viewport === 'desktop' ? 'bg-slate-800 text-white' : 'text-slate-500'
+                  viewport === 'desktop' ? 'bg-slate-800 text-white' : 'text-slate-500 hover:text-slate-300'
                 }`}
                 aria-label="Desktop preview width"
               >
@@ -173,51 +295,201 @@ export const LivePreviewPanel: React.FC<LivePreviewPanelProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setViewport('compact')}
+                onClick={() => setViewport('tablet')}
                 className={`p-1 rounded ${
-                  viewport === 'compact' ? 'bg-slate-800 text-white' : 'text-slate-500'
+                  viewport === 'tablet' ? 'bg-slate-800 text-white' : 'text-slate-500 hover:text-slate-300'
                 }`}
-                aria-label="Narrow preview width"
+                aria-label="Tablet preview width"
+              >
+                <Tablet className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewport('mobile')}
+                className={`p-1 rounded ${
+                  viewport === 'mobile' ? 'bg-slate-800 text-white' : 'text-slate-500 hover:text-slate-300'
+                }`}
+                aria-label="Mobile preview width"
               >
                 <Smartphone className="w-3.5 h-3.5" />
               </button>
             </div>
+
+            {/* Refresh / Copy / Reset / Fullscreen */}
+            <button
+              type="button"
+              onClick={triggerSimulatedRefresh}
+              className="p-1.5 text-slate-400 hover:text-white bg-[#141C2B] border border-slate-800 rounded"
+              aria-label="Refresh simulated preview"
+              title="Refresh preview"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={copyCurrentOutput}
+              className="p-1.5 text-slate-400 hover:text-white bg-[#141C2B] border border-slate-800 rounded"
+              aria-label="Copy preview output"
+              title="Copy output details"
+            >
+              {copiedOutput ? (
+                <Check className="w-3.5 h-3.5 text-emerald-400" />
+              ) : (
+                <Copy className="w-3.5 h-3.5" />
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSimResult(null);
+                setPreviewError(null);
+                onResetPreview();
+              }}
+              className="p-1.5 text-slate-400 hover:text-white bg-[#141C2B] border border-slate-800 rounded"
+              aria-label="Reset simulated preview"
+              title="Reset simulated preview safely"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsFullscreen((prev) => !prev)}
+              className="p-1.5 text-slate-400 hover:text-white bg-[#141C2B] border border-slate-800 rounded"
+              aria-label={isFullscreen ? 'Exit fullscreen preview' : 'Enter fullscreen preview'}
+              title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen preview'}
+            >
+              {isFullscreen ? (
+                <Minimize2 className="w-3.5 h-3.5" />
+              ) : (
+                <Maximize2 className="w-3.5 h-3.5" />
+              )}
+            </button>
           </div>
         </div>
 
         {/* Artifact Preview Adapter Selector */}
-        <div className="flex items-center gap-1 overflow-x-auto pb-0.5">
-          {PREVIEW_KINDS.map((k) => {
-            const active = previewKind === k.id;
-            return (
-              <button
-                key={k.id}
-                type="button"
-                onClick={() => {
-                  setPreviewKind(k.id);
-                  if (k.id !== 'ui-build') setInspectMode(false);
-                }}
-                className={`px-2.5 py-1 text-[11px] font-medium rounded transition-colors whitespace-nowrap shrink-0 ${
-                  active
-                    ? 'bg-slate-800 text-white'
-                    : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                {k.label}
-              </button>
-            );
-          })}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1 overflow-x-auto pb-0.5">
+            {PREVIEW_KINDS.map((k) => {
+              const active = previewKind === k.id;
+              return (
+                <button
+                  key={k.id}
+                  type="button"
+                  onClick={() => {
+                    setPreviewKind(k.id);
+                    setPreviewError(null);
+                    if (k.id !== 'ui-build') setInspectMode(false);
+                  }}
+                  className={`px-2.5 py-1 text-[11px] font-medium rounded transition-colors whitespace-nowrap shrink-0 ${
+                    active ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {k.label}
+                </button>
+              );
+            })}
+          </div>
+
+          <button
+            type="button"
+            onClick={() =>
+              setPreviewError((prev) =>
+                prev
+                  ? null
+                  : 'Simulated preview error: artifact bundle stream unavailable in local sandbox.'
+              )
+            }
+            className="text-[10px] font-mono text-slate-500 hover:text-slate-300 whitespace-nowrap shrink-0"
+          >
+            {previewError ? 'Clear Error State' : 'Test Error State'}
+          </button>
         </div>
+
+        {/* Named Checkpoints Drawer */}
+        {checkpointOpen && (
+          <div className="p-3 bg-[#090D14] border border-slate-800 rounded-md space-y-2.5 text-xs">
+            <form onSubmit={handleSaveCheckpoint} className="flex items-center gap-2">
+              <input
+                type="text"
+                value={checkpointName}
+                onChange={(e) => setCheckpointName(e.target.value)}
+                placeholder="Checkpoint name (e.g. Before compact layout)"
+                aria-label="New checkpoint name"
+                className="flex-1 px-2.5 py-1.5 text-xs bg-[#111827] border border-slate-700 rounded text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+              />
+              <button
+                type="submit"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded whitespace-nowrap"
+              >
+                <BookmarkPlus className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Save Checkpoint</span>
+              </button>
+            </form>
+
+            {checkpoints.length === 0 ? (
+              <p className="text-[11px] text-slate-500">
+                No named checkpoints saved for this project yet.
+              </p>
+            ) : (
+              <ul className="space-y-1 max-h-28 overflow-y-auto">
+                {checkpoints.map((cp) => (
+                  <li
+                    key={cp.id}
+                    className="flex items-center justify-between gap-2 px-2.5 py-1.5 bg-[#111827] border border-slate-800 rounded"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-slate-200 font-medium truncate">{cp.name}</div>
+                      <div className="text-[10px] font-mono text-slate-500">
+                        {new Date(cp.createdAt).toLocaleTimeString([], {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}{' '}
+                        · {cp.preview.primaryActionLabel}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onRestoreCheckpoint(cp.id)}
+                      className="px-2 py-1 text-[11px] font-medium text-blue-300 hover:text-white border border-blue-500/35 hover:bg-blue-950/40 rounded shrink-0"
+                    >
+                      Restore
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Preview Canvas */}
       <div className="flex-1 overflow-y-auto p-4 lg:p-5 bg-[#090D14] flex flex-col items-center">
-        <div
-          className={`w-full transition-all ${
-            viewport === 'compact' ? 'max-w-sm' : 'max-w-2xl'
-          }`}
-        >
-          {previewKind === 'ui-build' ? (
+        <div className={`w-full transition-all ${viewportWidthClass}`}>
+          {previewLoading ? (
+            <div className="p-10 bg-[#111827] border border-slate-800 rounded-lg flex flex-col items-center justify-center gap-2 text-xs text-slate-300">
+              <Loader2 className="w-5 h-5 text-blue-400 animate-spin" aria-hidden="true" />
+              <span>Refreshing sandboxed preview ({artifactPreview.originLabel})...</span>
+            </div>
+          ) : previewError ? (
+            <div className="p-6 bg-[#111827] border border-rose-500/40 rounded-lg space-y-3 text-xs">
+              <div className="flex items-start gap-2 text-rose-200">
+                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" aria-hidden="true" />
+                <div>
+                  <div className="font-medium text-rose-100">Preview Render Unavailable</div>
+                  <p className="text-rose-300/90 mt-1">{previewError}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={triggerSimulatedRefresh}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-white rounded"
+              >
+                <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Reload Sandboxed Preview</span>
+              </button>
+            </div>
+          ) : previewKind === 'ui-build' ? (
             <div className={`bg-[#111827] border border-slate-800 rounded-lg ${spacingClass}`}>
               {/* Preview Region 1: Header */}
               <div
@@ -241,9 +513,7 @@ export const LivePreviewPanel: React.FC<LivePreviewPanelProps> = ({
                   <StatusTag value={artifactPreview.status} />
                 </div>
                 {preview.draftBannerNote && (
-                  <p className="mt-2 text-[11px] text-slate-500">
-                    {preview.draftBannerNote}
-                  </p>
+                  <p className="mt-2 text-[11px] text-slate-500">{preview.draftBannerNote}</p>
                 )}
               </div>
 
@@ -322,9 +592,7 @@ export const LivePreviewPanel: React.FC<LivePreviewPanelProps> = ({
                         className="p-2.5 bg-[#090D14] border border-slate-800 rounded text-xs"
                       >
                         <div className="text-[11px] text-slate-500">{cw.label}</div>
-                        <div className="font-mono text-slate-200 mt-0.5 truncate">
-                          {cw.value}
-                        </div>
+                        <div className="font-mono text-slate-200 mt-0.5 truncate">{cw.value}</div>
                       </div>
                     ))}
                   </div>
@@ -387,7 +655,12 @@ export const LivePreviewPanel: React.FC<LivePreviewPanelProps> = ({
                   preview.showMonospaceOutputs ? 'font-mono' : 'font-sans'
                 } ${getInspectClass('preview-output')}`}
               >
-                <div className="text-[11px] text-slate-500 mb-1">Sandboxed Output</div>
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <span className="text-[11px] text-slate-500">Sandboxed Output</span>
+                  {copiedOutput && (
+                    <span className="text-[10px] font-mono text-emerald-300">Copied</span>
+                  )}
+                </div>
                 <div className="text-slate-200">
                   {simResult ?? `Ready. Click "${preview.primaryActionLabel}" to test in sandbox.`}
                 </div>

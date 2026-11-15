@@ -1,11 +1,16 @@
 import React, { useState } from 'react';
 import { AlertCircle, X } from 'lucide-react';
 import { ENGINEERING_COMPONENTS, WORKFLOW_CATALOG } from '../data/seedFoundryData';
-import { foundryService, IntakeValidationErrors } from '../services/foundryService';
+import {
+  foundryService,
+  IntakeValidationErrors,
+  PROJECT_TEMPLATES,
+} from '../services/foundryService';
 import {
   EngineeringComponentId,
   EngineeringIntakePayload,
   ProductFamily,
+  ProjectTemplateSpec,
 } from '../types/foundry';
 import { StatusTag } from './StatusTag';
 
@@ -29,6 +34,7 @@ const DEFAULT_PAYLOAD: EngineeringIntakePayload = {
 
 export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmit }) => {
   const [form, setForm] = useState<EngineeringIntakePayload>(DEFAULT_PAYLOAD);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [errors, setErrors] = useState<IntakeValidationErrors>({});
   const [submitting, setSubmitting] = useState(false);
 
@@ -46,7 +52,24 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
     }));
   };
 
+  const applyTemplate = (tpl: ProjectTemplateSpec) => {
+    setSelectedTemplateId(tpl.id);
+    setForm({
+      projectName: `${tpl.defaultNamePrefix} ${Math.floor(10 + Math.random() * 89)}`,
+      productFamily: tpl.productFamily,
+      componentId: tpl.componentId,
+      workflowId: tpl.workflowId,
+      purpose: tpl.purpose,
+      declaredInputs: tpl.declaredInputs,
+      environmentDeclaration: tpl.environmentDeclaration,
+      sourceRevision: tpl.sourceRevision,
+      acknowledgeBoundary: true,
+    });
+    setErrors({});
+  };
+
   const handleFillExample = () => {
+    setSelectedTemplateId('application');
     setForm({
       projectName: 'PrismPM Calculator Qualification Demo',
       productFamily: 'application',
@@ -72,6 +95,7 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
     try {
       await onSubmit(form);
       setForm(DEFAULT_PAYLOAD);
+      setSelectedTemplateId(null);
       setErrors({});
       onClose();
     } finally {
@@ -116,6 +140,35 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
         </div>
 
         <form onSubmit={handleFormSubmit} className="p-6 overflow-y-auto space-y-4">
+          {/* Synthetic UOR-grounded Templates */}
+          <div className="space-y-2">
+            <div className="text-xs font-medium text-slate-300">
+              Start from a UOR Synthetic Template (Optional)
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              {PROJECT_TEMPLATES.map((tpl) => {
+                const active = selectedTemplateId === tpl.id;
+                return (
+                  <button
+                    key={tpl.id}
+                    type="button"
+                    onClick={() => applyTemplate(tpl)}
+                    data-testid={`template-${tpl.id}`}
+                    className={`p-2.5 text-left rounded-md border transition-colors ${
+                      active
+                        ? 'bg-blue-950/35 border-blue-500/50 text-slate-100'
+                        : 'bg-[#0B0F17] border-slate-800 hover:border-slate-700 text-slate-300'
+                    }`}
+                  >
+                    <div className="text-xs font-medium text-slate-100">{tpl.title}</div>
+                    <div className="text-[11px] text-slate-400 mt-0.5 leading-snug">
+                      {tpl.description}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1.5" htmlFor="intake-name">

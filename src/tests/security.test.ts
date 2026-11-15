@@ -544,3 +544,121 @@ test('durableLocalStore and syncService enforce strict allowlist export schema s
     );
   }
 });
+
+test('missing verification suites and forged or untrusted evidence strictly block release', () => {
+  const project = createFormalProject();
+  const artifacts = [createArtifact(project.id)];
+  const approvals = [createReleaseApproval(project.id)];
+
+  // 1. Missing required verification suites
+  const emptySuitesResult = verificationAuthorityService.evaluateProjectAuthority(
+    { project, verifications: [], artifacts, approvals },
+    TRUSTED_HARNESS
+  );
+  assert.equal(emptySuitesResult.overallVerificationState, 'NOT VERIFIED');
+  assert.equal(emptySuitesResult.releaseEligible, false);
+  assert.equal(emptySuitesResult.missingAuthorities.length, 3);
+
+  // 2. Forged evidence: suite claims AUTHENTICATED_BY_VERIFIER & PASS, but oracle detects untrusted provenance
+  const forgedSuites = createVerifiedSuites(project.id).map((suite, idx) =>
+    idx === 2
+      ? {
+          ...suite,
+          evidenceProvenance: 'forged-client-claim',
+          authenticExecutionRef: 'forged-ref-999',
+        }
+      : suite
+  );
+  const strictOracle: AuthorityTrustContext = {
+    authenticateVerifierRecord: (s) =>
+      !s.isSimulated &&
+      s.authenticationStatus === 'AUTHENTICATED_BY_VERIFIER' &&
+      s.evidenceProvenance === 'trusted-test-harness',
+    authenticateHumanApprover: (a) => Boolean(a.authenticatedApproverId?.startsWith('human-')),
+  };
+  const forgedResult = verificationAuthorityService.evaluateProjectAuthority(
+    { project, verifications: forgedSuites, artifacts, approvals },
+    strictOracle
+  );
+  assert.equal(forgedResult.overallVerificationState, 'NOT VERIFIED');
+  assert.equal(forgedResult.releaseEligible, false);
+  assert.equal(forgedResult.releaseStatusLabel, 'RELEASE BLOCKED');
+});
+
+test('sanitizeExportBundle neutralizes hostile strings, prototype keys, and deeply nested payloads', () => {
+  const projectWithHostileFields = {
+    ...createFormalProject(),
+    id: 'proj-hostile\u0000\u0007-01',
+    name: '<script>alert("xss")</script> Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTYifQ.signature_part_here',
+    sourceRevision: 'main@12345\npassword=top_secret_pw',
+    deepNested: {
+      level1: {
+        level2: {
+          level3: {
+            privateKey: '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----',
+            secretToken: 'ghp_1234567890abcdef123456',
+          },
+        },
+      },
+    },
+    ['__proto__']: { polluted: true },
+  } as unknown as ProjectRecord;
+
+  const maliciousJsonPayload = JSON.parse(
+    JSON.stringify({
+      schema: 'uor.foundry.air-gapped-bundle.v2',
+      integrationMode: 'DEMO',
+      operatorConfirmed: true,
+      projects: [projectWithHostileFields],
+      artifactDigests: [createArtifact('proj-hostile-01')],
+      operationRefs: [],
+      nestedLeak: {
+        deep: {
+          authorizationSecret: 'NESTED_HOSTILE_SECRET',
+        },
+      },
+    })
+  ) as Record<string, unknown>;
+
+  const sanitized = sanitizeExportBundle(maliciousJsonPayload);
+  const json = JSON.stringify(sanitized);
+
+  assert.equal(Object.prototype.hasOwnProperty.call(sanitized.projects[0], '__proto__'), false);
+  assert.equal((sanitized.projects[0] as unknown as Record<string, unknown>).deepNested, undefined);
+  assert.equal(json.includes('\u0000'), false);
+  assert.equal(json.includes('NESTED_HOSTILE_SECRET'), false);
+  assert.equal(json.includes('BEGIN RSA PRIVATE KEY'), false);
+  assert.equal(json.includes('ghp_1234567890abcdef123456'), false);
+  assert.equal(json.includes('top_secret_pw'), false);
+  assert.equal(json.includes('signature_part_here'), false);
+  assert.ok(sanitized.projects[0].approvedTitle.includes('[STRIPPED_CREDENTIAL]'));
+});
+
+test('DEMO mode never dispatches a real Windmill job', async () => {
+  const { DemoWindmillExecutionService } = await import('../adapters/windmillExecutionService.ts');
+  const demoService = new DemoWindmillExecutionService({
+    fixtures: [],
+    verifications: [],
+    artifacts: [],
+  });
+
+  const health = await demoService.checkRuntimeHealth();
+  assert.equal(health.mode, 'DEMO');
+  assert.equal(health.reachable, false);
+  assert.equal(health.authenticated, false);
+  assert.equal(health.permissionsValidated, false);
+
+  const dispatch = await demoService.submitAuthorizedWorkflow({
+    requestId: 'req-demo-guard',
+    idempotencyKey: 'idem-demo-guard',
+    projectId: 'proj-sec-unit',
+    workflowId: 'wf-lexlean-formal',
+    flowPath: 'f/uor_foundry/lexlean_formal',
+    flowVersion: '0.4.0',
+    sourceRevision: SOURCE_REVISION,
+    operatorApproved: true,
+    requestedAt: '2026-11-15T00:00:00Z',
+  });
+  assert.equal(dispatch.ok, false);
+  assert.equal(dispatch.diagnostic?.code, 'SANDBOX_ISOLATED');
+});
