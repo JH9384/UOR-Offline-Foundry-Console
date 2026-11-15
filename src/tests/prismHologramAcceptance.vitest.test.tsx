@@ -1,5 +1,5 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   FIXED_WINDMILL_COMMAND_REGISTRY,
@@ -160,19 +160,22 @@ describe('Prism Source-to-Hologram Production Integration & Failure Paths', () =
 
     // Interactive inspector self-tests validate both PP3001 rejection and HOLO\x04\0 structural preflight
     fireEvent.click(screen.getByRole('button', { name: /Test `PP3001` JSON Rejection/i }));
-    await new Promise((r) => setTimeout(r, 25));
-    expect(screen.getByTestId('holo-inspection-result').textContent).toContain('REJECTED_JSON_AS_HOLO_PP3001');
+    await waitFor(() => {
+      expect(screen.getByTestId('holo-inspection-result').textContent).toContain('REJECTED_JSON_AS_HOLO_PP3001');
+    });
 
     fireEvent.click(screen.getByRole('button', { name: /Run Structural Preflight \(Synthetic/i }));
-    await new Promise((r) => setTimeout(r, 25));
-    expect(screen.getByTestId('holo-inspection-result').textContent).toContain('STRUCTURAL PREFLIGHT PASS');
-    expect(screen.getByTestId('holo-inspection-result').textContent).toContain('SYNTHETIC FIXTURE');
-    expect(screen.getByTestId('holo-trust-layers').textContent).toContain('NOT_RUN_IN_BROWSER');
-    expect(screen.getByTestId('holo-manifest-summary').textContent).toContain('prismpm/holo-v4-manifest/1');
+    await waitFor(() => {
+      expect(screen.getByTestId('holo-inspection-result').textContent).toContain('STRUCTURAL PREFLIGHT PASS');
+      expect(screen.getByTestId('holo-inspection-result').textContent).toContain('SYNTHETIC FIXTURE');
+      expect(screen.getByTestId('holo-trust-layers').textContent).toContain('NOT_RUN_IN_BROWSER');
+      expect(screen.getByTestId('holo-manifest-summary').textContent).toContain('prismpm/holo-v4-manifest/1');
+    });
 
     fireEvent.click(screen.getByRole('button', { name: /Test Corrupt Manifest Rejection/i }));
-    await new Promise((r) => setTimeout(r, 25));
-    expect(screen.getByTestId('holo-inspection-result').textContent).toContain('INVALID_MANIFEST');
+    await waitFor(() => {
+      expect(screen.getByTestId('holo-inspection-result').textContent).toContain('INVALID_MANIFEST');
+    });
   });
 
   it('supports all 3 Prism input modes (NATIVE_PRISM, GUIDED_PRODUCT, EXISTING_RUST) with distinct gates', async () => {
@@ -484,11 +487,12 @@ describe('Prism Source-to-Hologram Production Integration & Failure Paths', () =
         artifactBuffers={{ [holoArt.id]: arrayBuf }}
       />
     );
-    await new Promise((r) => setTimeout(r, 30));
-    expect(screen.getByTestId('holo-auto-scan-status').textContent).toContain('Structural Preflight');
-    expect(screen.getByTestId('holo-auto-scan-status').textContent).toContain('STRUCTURAL PREFLIGHT PASS');
-    expect(screen.getByTestId('holo-inspection-result').textContent).toContain(parsed.sha256Hash);
-    expect(screen.getByTestId('holo-manifest-summary').textContent).toContain('prismpm/holo-v4-manifest/1');
+    await waitFor(() => {
+      expect(screen.getByTestId('holo-auto-scan-status').textContent).toContain('Structural Preflight');
+      expect(screen.getByTestId('holo-auto-scan-status').textContent).toContain('STRUCTURAL PREFLIGHT PASS');
+      expect(screen.getByTestId('holo-inspection-result').textContent).toContain(parsed.sha256Hash);
+      expect(screen.getByTestId('holo-manifest-summary').textContent).toContain('prismpm/holo-v4-manifest/1');
+    });
 
     // Selecting a local JSON-as-.holo file triggers automatic PP3001 rejection scan
     const fileInput = screen.getByTestId('holo-file-input') as HTMLInputElement;
@@ -497,7 +501,273 @@ describe('Prism Source-to-Hologram Production Integration & Failure Paths', () =
       arrayBuffer: async () => new TextEncoder().encode('{"fake":"json-holo"}').buffer,
     } as unknown as File;
     fireEvent.change(fileInput, { target: { files: [rogueHoloFile] } });
-    await new Promise((r) => setTimeout(r, 30));
-    expect(screen.getByTestId('holo-inspection-result').textContent).toContain('REJECTED_JSON_AS_HOLO_PP3001');
+    await waitFor(() => {
+      const resultText = screen.getByTestId('holo-inspection-result').textContent ?? '';
+      expect(resultText).toContain('REJECTED_JSON_AS_HOLO_PP3001');
+      expect(resultText).not.toContain(parsed.sha256Hash);
+    });
+  });
+
+  it('inspects sequential uploads independently of seeded fixture state across valid/invalid transitions and async races', async () => {
+    const calc = INITIAL_PROJECTS.find((p) => p.id === 'proj-prism-calc')!;
+    const calcArts = INITIAL_ARTIFACTS.filter((a) => a.projectId === calc.id);
+    const holoArt = {
+      ...calcArts.find((a) => a.outputClass === 'physical_holo_archive')!,
+      isSyntheticFixture: true,
+    };
+    const orderedArts = [holoArt, ...calcArts.filter((a) => a.id !== holoArt.id)];
+
+    const seededFixtureBuf = buildHologramV4Buffer({
+      projectId: calc.id,
+      projectName: calc.name,
+      sourceRevision: calc.sourceRevision,
+      isSyntheticFixture: true,
+    });
+    const seededSha = await computeSha256Hex(new Uint8Array(seededFixtureBuf));
+
+    // Independent valid .holo upload belonging to a completely different project/revision & non-synthetic origin
+    const independentValidBuf = buildHologramV4Buffer({
+      projectId: 'proj-external-local',
+      projectName: 'External Local App',
+      sourceRevision: 'local/main@deadcafe',
+      isSyntheticFixture: false,
+    });
+    const independentValidSha = await computeSha256Hex(new Uint8Array(independentValidBuf));
+
+    const corruptManifestBuf = buildHologramV4Buffer({
+      projectId: 'proj-external-local',
+      projectName: 'External Local App',
+      sourceRevision: 'local/main@deadcafe',
+      corruptManifest: true,
+      isSyntheticFixture: false,
+    });
+
+    const secondValidBuf = buildHologramV4Buffer({
+      projectId: 'proj-second-local',
+      projectName: 'Recovered Local App',
+      sourceRevision: 'local/main@cafebabe',
+      isSyntheticFixture: false,
+    });
+    const secondValidSha = await computeSha256Hex(new Uint8Array(secondValidBuf));
+
+    render(
+      <ArtifactsView
+        projects={[calc]}
+        artifacts={orderedArts}
+        selectedProjectId={calc.id}
+        artifactBuffers={{ [holoArt.id]: seededFixtureBuf }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('holo-inspection-result').textContent).toContain(seededSha);
+      expect(screen.getByTestId('holo-inspection-result').textContent).toContain('SYNTHETIC FIXTURE');
+    });
+
+    const fileInput = screen.getByTestId('holo-file-input') as HTMLInputElement;
+
+    // 1. Valid seeded fixture -> invalid JSON rogue.holo (PP3001)
+    fireEvent.change(fileInput, {
+      target: {
+        files: [
+          {
+            name: 'rogue.holo',
+            arrayBuffer: async () => new TextEncoder().encode('{"fake":"json-masquerade"}').buffer,
+          } as unknown as File,
+        ],
+      },
+    });
+    await waitFor(() => {
+      const text = screen.getByTestId('holo-inspection-result').textContent ?? '';
+      expect(text).toContain('REJECTED_JSON_AS_HOLO_PP3001');
+      expect(text).not.toContain(seededSha);
+    });
+
+    // 2. Invalid -> Valid sequential upload (must NOT inherit seeded projectId/sourceRevision/isSyntheticFixture)
+    fireEvent.change(fileInput, {
+      target: {
+        files: [
+          {
+            name: 'external-app.holo',
+            arrayBuffer: async () => independentValidBuf,
+          } as unknown as File,
+        ],
+      },
+    });
+    await waitFor(() => {
+      const text = screen.getByTestId('holo-inspection-result').textContent ?? '';
+      expect(text).toContain('STRUCTURAL PREFLIGHT PASS');
+      expect(text).toContain(independentValidSha);
+      expect(text).toContain('proj-external-local');
+      expect(text).not.toContain('SYNTHETIC FIXTURE');
+      expect(screen.getByTestId('holo-auto-scan-status').textContent).toContain('external-app.holo');
+    });
+
+    // 3. Valid -> Invalid (corrupt manifest)
+    fireEvent.change(fileInput, {
+      target: {
+        files: [
+          {
+            name: 'corrupt.holo',
+            arrayBuffer: async () => corruptManifestBuf,
+          } as unknown as File,
+        ],
+      },
+    });
+    await waitFor(() => {
+      const text = screen.getByTestId('holo-inspection-result').textContent ?? '';
+      expect(text).toContain('INVALID_MANIFEST');
+      expect(text).not.toContain(independentValidSha);
+    });
+
+    // 4. Async race protection: slow stale invalid upload must NEVER overwrite newer valid upload
+    let resolveSlowRead!: (buf: ArrayBuffer) => void;
+    const slowReadPromise = new Promise<ArrayBuffer>((resolve) => {
+      resolveSlowRead = resolve;
+    });
+
+    fireEvent.change(fileInput, {
+      target: {
+        files: [
+          {
+            name: 'slow-rogue.holo',
+            arrayBuffer: () => slowReadPromise,
+          } as unknown as File,
+        ],
+      },
+    });
+
+    // Prior stale result must be cleared immediately while slow upload is pending
+    expect(screen.queryByTestId('holo-inspection-result')).toBeNull();
+
+    // Faster newer valid upload arrives before slow-rogue finishes reading
+    fireEvent.change(fileInput, {
+      target: {
+        files: [
+          {
+            name: 'fast-valid.holo',
+            arrayBuffer: async () => secondValidBuf,
+          } as unknown as File,
+        ],
+      },
+    });
+
+    await waitFor(() => {
+      const text = screen.getByTestId('holo-inspection-result').textContent ?? '';
+      expect(text).toContain('STRUCTURAL PREFLIGHT PASS');
+      expect(text).toContain(secondValidSha);
+      expect(text).toContain('proj-second-local');
+    });
+
+    // Resolve the older slow upload now and flush promises
+    resolveSlowRead(new TextEncoder().encode('{"stale":"rogue"}').buffer);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Newer valid upload remains displayed cleanly
+    await waitFor(() => {
+      const text = screen.getByTestId('holo-inspection-result').textContent ?? '';
+      expect(text).toContain('STRUCTURAL PREFLIGHT PASS');
+      expect(text).toContain(secondValidSha);
+      expect(text).not.toContain('REJECTED_JSON_AS_HOLO_PP3001');
+    });
+  });
+
+  it('clears stale inspection output and protects against races during rapid artifact selection changes', async () => {
+    const calc = INITIAL_PROJECTS.find((p) => p.id === 'proj-prism-calc')!;
+    const calcArts = INITIAL_ARTIFACTS.filter((a) => a.projectId === calc.id);
+    const holoArt1 = calcArts.find((a) => a.outputClass === 'physical_holo_archive')!;
+    const nonHoloArt = calcArts.find((a) => a.outputClass === 'model_prism_json')!;
+    const holoArt2 = {
+      ...holoArt1,
+      id: 'art-prism-calc-holo-alt',
+      artifactName: 'calculator-alt.holo',
+      isSyntheticFixture: false,
+    };
+    const holoArtUnbuffered = {
+      ...holoArt1,
+      id: 'art-prism-calc-holo-unbuffered',
+      artifactName: 'calculator-missing-bytes.holo',
+    };
+
+    const buf1 = buildHologramV4Buffer({
+      projectId: calc.id,
+      projectName: calc.name,
+      sourceRevision: calc.sourceRevision,
+      entrypoint: 'holo_run_v1',
+      isSyntheticFixture: true,
+    });
+    const sha1 = await computeSha256Hex(new Uint8Array(buf1));
+
+    const buf2 = buildHologramV4Buffer({
+      projectId: calc.id,
+      projectName: calc.name,
+      sourceRevision: calc.sourceRevision,
+      entrypoint: 'holo_run_v2_alt',
+      isSyntheticFixture: false,
+    });
+    const sha2 = await computeSha256Hex(new Uint8Array(buf2));
+
+    render(
+      <ArtifactsView
+        projects={[calc]}
+        artifacts={[holoArt1, nonHoloArt, holoArt2, holoArtUnbuffered]}
+        selectedProjectId={calc.id}
+        artifactBuffers={{
+          [holoArt1.id]: buf1,
+          [holoArt2.id]: buf2,
+        }}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('holo-inspection-result').textContent).toContain(sha1);
+    });
+
+    // Upload a rogue file while holoArt1 is selected
+    const fileInput = screen.getByTestId('holo-file-input') as HTMLInputElement;
+    fireEvent.change(fileInput, {
+      target: {
+        files: [
+          {
+            name: 'rogue.holo',
+            arrayBuffer: async () => new TextEncoder().encode('{"fake":"json"}').buffer,
+          } as unknown as File,
+        ],
+      },
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('holo-inspection-result').textContent).toContain('REJECTED_JSON_AS_HOLO_PP3001');
+    });
+
+    const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // Selecting a non-.holo artifact clears stale inspection output immediately
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(escapeRegex(nonHoloArt.artifactName)) }));
+    await waitFor(() => {
+      expect(screen.queryByTestId('holo-inspection-result')).toBeNull();
+      expect(screen.queryByTestId('holo-auto-scan-status')).toBeNull();
+    });
+
+    // Rapid selection changes across buffered .holo -> unbuffered .holo -> buffered .holo #2
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(escapeRegex(holoArt1.artifactName)) }));
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(escapeRegex(holoArtUnbuffered.artifactName)) }));
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(escapeRegex(holoArt2.artifactName)) }));
+
+    await waitFor(() => {
+      const resultText = screen.getByTestId('holo-inspection-result').textContent ?? '';
+      expect(resultText).toContain('STRUCTURAL PREFLIGHT PASS');
+      expect(resultText).toContain(sha2);
+      expect(resultText).toContain('holo_run_v2_alt');
+      expect(resultText).not.toContain(sha1);
+      expect(resultText).not.toContain('REJECTED_JSON_AS_HOLO_PP3001');
+    });
+
+    // Switching to unbuffered .holo artifact clears prior result instead of keeping stale inspection
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(escapeRegex(holoArtUnbuffered.artifactName)) }));
+    await waitFor(() => {
+      expect(screen.queryByTestId('holo-inspection-result')).toBeNull();
+      expect(screen.getByTestId('holo-auto-scan-status').textContent).toContain('awaiting local .holo file selection');
+    });
   });
 });

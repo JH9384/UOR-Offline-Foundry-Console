@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   CheckCircle2,
   ChevronDown,
@@ -100,8 +100,9 @@ export const ArtifactsView: React.FC<ArtifactsViewProps> = ({
   const [metadataModalOpen, setMetadataModalOpen] = useState<boolean>(false);
   const [holoInspection, setHoloInspection] = useState<HologramV4ParsedArtifact | null>(null);
   const [inspectingHolo, setInspectingHolo] = useState<boolean>(false);
-  const [uploadedBuffers, setUploadedBuffers] = useState<Record<string, ArrayBuffer>>({});
   const [autoScanStatus, setAutoScanStatus] = useState<string | null>(null);
+  const [selectionRevision, setSelectionRevision] = useState<number>(0);
+  const inspectionRequestIdRef = useRef<number>(0);
 
   const filteredArtifacts = artifacts.filter((art) => {
     const proj = projects.find((p) => p.id === art.projectId);
@@ -252,42 +253,72 @@ export const ArtifactsView: React.FC<ArtifactsViewProps> = ({
         activeArtifact.artifactFormat.toLowerCase().includes('holo'))
   );
 
-  // Trigger an automatic Hologram v4 structural preflight scan whenever a `.holo` file or
-  // buffered `.holo` artifact record is selected.
+  const activeArtifactBuffer = activeArtifact ? artifactBuffers?.[activeArtifact.id] : undefined;
+
+  const handleSelectArtifact = (artifactId: string) => {
+    inspectionRequestIdRef.current += 1;
+    setHoloInspection(null);
+    setAutoScanStatus(null);
+    setInspectingHolo(false);
+    setLastExportNotice(null);
+    setSelectedId(artifactId);
+    setSelectionRevision((rev) => rev + 1);
+  };
+
+  // Trigger an automatic Hologram v4 structural preflight scan whenever a buffered `.holo`
+  // artifact record is selected. Explicit file uploads are handled independently below.
   useEffect(() => {
     let cancelled = false;
+    const requestId = ++inspectionRequestIdRef.current;
+
+    setHoloInspection(null);
+
     if (!activeArtifact || !isHoloArtifactSelected) {
-      setHoloInspection(null);
       setAutoScanStatus(null);
-      return;
+      setInspectingHolo(false);
+      return () => {
+        cancelled = true;
+      };
     }
 
-    const buffer =
-      uploadedBuffers[activeArtifact.id] ?? artifactBuffers?.[activeArtifact.id];
-
-    if (!buffer) {
-      setHoloInspection(null);
+    if (!activeArtifactBuffer) {
+      setInspectingHolo(false);
       setAutoScanStatus(
         `Structural Preflight Auto-Scan (${activeArtifact.artifactName}): awaiting local .holo file selection to inspect HOLO\\x04\\0 bytes, manifest, and SHA-256.`
       );
-      return;
+      return () => {
+        cancelled = true;
+      };
     }
 
     setInspectingHolo(true);
-    parseHologramV4Header(buffer, {
+    setAutoScanStatus(
+      `Structural Preflight (${activeArtifact.artifactName}): inspecting HOLO\\x04\\0 bytes...`
+    );
+
+    parseHologramV4Header(activeArtifactBuffer, {
       expectedProjectId: activeProject?.id,
       expectedSourceRevision: activeProject?.sourceRevision,
       isSyntheticFixture: activeArtifact.isSyntheticFixture,
     })
       .then((report) => {
-        if (cancelled) return;
+        if (cancelled || inspectionRequestIdRef.current !== requestId) return;
         setHoloInspection(report);
         setAutoScanStatus(
           `Structural Preflight (${activeArtifact.artifactName}): ${report.status}${report.isSyntheticFixture ? ' [SYNTHETIC FIXTURE]' : ''} (${report.byteLength} bytes · sha256:${report.sha256Hash.slice(0, 12)}...)`
         );
       })
+      .catch(() => {
+        if (cancelled || inspectionRequestIdRef.current !== requestId) return;
+        setHoloInspection(null);
+        setAutoScanStatus(
+          `Structural Preflight (${activeArtifact.artifactName}): inspection failed.`
+        );
+      })
       .finally(() => {
-        if (!cancelled) setInspectingHolo(false);
+        if (!cancelled && inspectionRequestIdRef.current === requestId) {
+          setInspectingHolo(false);
+        }
       });
 
     return () => {
@@ -296,45 +327,95 @@ export const ArtifactsView: React.FC<ArtifactsViewProps> = ({
   }, [
     activeArtifact?.id,
     activeArtifact?.artifactName,
+    activeArtifact?.isSyntheticFixture,
     activeProject?.id,
     activeProject?.sourceRevision,
     isHoloArtifactSelected,
-    uploadedBuffers,
-    artifactBuffers,
+    activeArtifactBuffer,
+    selectionRevision,
   ]);
 
-  const runHoloBufferInspection = async (buffer: ArrayBuffer, label: string) => {
-    setInspectingHolo(true);
+  const runHoloBufferInspection = async (
+    buffer: ArrayBuffer,
+    label: string,
+    options: {
+      source?: 'upload' | 'self-test';
+      requestId?: number;
+    } = {}
+  ) => {
+    const source = options.source ?? 'self-test';
+    const requestId = options.requestId ?? ++inspectionRequestIdRef.current;
+
+    if (options.requestId === undefined) {
+      setHoloInspection(null);
+      setAutoScanStatus(`Inspecting ${label}...`);
+      setInspectingHolo(true);
+    }
+
     try {
-      const report = await parseHologramV4Header(buffer, {
-        expectedProjectId: activeProject?.id,
-        expectedSourceRevision: activeProject?.sourceRevision,
-      });
+      // Explicitly uploaded local files must be inspected independently of the currently
+      // selected seeded artifact's projectId, sourceRevision, or synthetic fixture flag.
+      const parseOptions =
+        source === 'upload'
+          ? {}
+          : {
+              expectedProjectId: activeProject?.id,
+              expectedSourceRevision: activeProject?.sourceRevision,
+            };
+
+      const report = await parseHologramV4Header(buffer, parseOptions);
+      if (inspectionRequestIdRef.current !== requestId) {
+        return;
+      }
       setHoloInspection(report);
       setAutoScanStatus(
-        `Auto-Scan (${label}): ${report.status} (${report.byteLength} bytes · sha256:${report.sha256Hash.slice(0, 12)}...)`
+        source === 'upload'
+          ? `Uploaded File Inspection (${label}): ${report.status} (${report.byteLength} bytes · sha256:${report.sha256Hash.slice(0, 12)}...)`
+          : `Auto-Scan (${label}): ${report.status} (${report.byteLength} bytes · sha256:${report.sha256Hash.slice(0, 12)}...)`
       );
       setLastExportNotice(`Inspected ${label}: ${report.status} (${report.byteLength} bytes)`);
     } finally {
-      setInspectingHolo(false);
+      if (inspectionRequestIdRef.current === requestId) {
+        setInspectingHolo(false);
+      }
     }
   };
 
   const handleInspectFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const inputEl = e.currentTarget;
+    const file = inputEl.files?.[0];
     if (!file) return;
-    const buffer =
-      typeof file.arrayBuffer === 'function'
-        ? await file.arrayBuffer()
-        : await new Response(file).arrayBuffer();
-    if (activeArtifact) {
-      setUploadedBuffers((prev) => ({
-        ...prev,
-        [activeArtifact.id]: buffer,
-      }));
+
+    const requestId = ++inspectionRequestIdRef.current;
+    setHoloInspection(null);
+    setAutoScanStatus(`Inspecting ${file.name}...`);
+    setInspectingHolo(true);
+    setLastExportNotice(null);
+
+    try {
+      const buffer =
+        typeof file.arrayBuffer === 'function'
+          ? await file.arrayBuffer()
+          : await new Response(file).arrayBuffer();
+
+      if (inspectionRequestIdRef.current !== requestId) {
+        return;
+      }
+
+      await runHoloBufferInspection(buffer, file.name, {
+        source: 'upload',
+        requestId,
+      });
+    } finally {
+      if (inspectionRequestIdRef.current === requestId) {
+        setInspectingHolo(false);
+      }
+      try {
+        inputEl.value = '';
+      } catch {
+        // Ignore read-only value assignment in synthetic test inputs
+      }
     }
-    await runHoloBufferInspection(buffer, file.name);
-    e.target.value = '';
   };
 
   return (
@@ -495,10 +576,7 @@ export const ArtifactsView: React.FC<ArtifactsViewProps> = ({
                   <button
                     key={art.id}
                     type="button"
-                    onClick={() => {
-                      setSelectedId(art.id);
-                      setLastExportNotice(null);
-                    }}
+                    onClick={() => handleSelectArtifact(art.id)}
                     className={`w-full text-left px-5 py-4 transition-colors block ${
                       selected ? 'bg-slate-800/75' : 'hover:bg-slate-900/60'
                     }`}
