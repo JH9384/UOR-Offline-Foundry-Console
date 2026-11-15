@@ -1,35 +1,46 @@
+import { CANONICAL_TOOLCHAIN_PIN_MAP } from '../data/toolchainPinManifest';
 import { WorkflowStageContractName, WorkflowStageId } from '../types/foundry';
 
 /**
- * Fixed Windmill Command & Argument Registry.
+ * Canonical Windmill Command, Stage, Permission & Argument Registry.
  *
- * SECURITY INVARIANT:
- * - Zero arbitrary shell strings or raw chat prompts may ever be executed.
- * - Every runnable stage maps strictly to an allowlisted toolchain executable + subcommand
- *   and confined relative path arguments validated prior to Windmill dispatch.
+ * SINGLE SOURCE OF TRUTH:
+ * - Used by `scripts/prepare-windmill-app.mjs` to generate:
+ *   1) `uor_foundry.raw_app/backend/generated_command_registry.ts`
+ *   2) `uor_foundry.raw_app/flows/prism_hologram_delivery.flow.json`
+ * - Enforces real upstream CLI syntax pinned in `toolchainPinManifest.ts`.
+ * - Rejects arbitrary shell strings, chat prompts, path traversal, or non-`uor-offline-foundry` workspaces.
  */
+export const ALLOWED_WINDMILL_WORKSPACE = 'uor-offline-foundry' as const;
+
+export type CanonicalCommandId =
+  | 'prism_intake_validate'
+  | 'prism_specify_validate'
+  | 'prism_lock_check'
+  | 'lexlean_check'
+  | 'prismpm_check'
+  | 'lexlean_build'
+  | 'prismpm_build_locked'
+  | 'lexlean_verify'
+  | 'prismpm_verify'
+  | 'hologram_inspect'
+  | 'hologram_verify'
+  | 'hologram_plan'
+  | 'hologram_run'
+  | 'prism_review_qualify'
+  | 'prismpm_export_browser'
+  | 'uorust_project';
+
 export interface FixedRegistryEntry {
-  commandId:
-    | 'prism_intake_validate'
-    | 'prism_specify_validate'
-    | 'prism_lock_check'
-    | 'lexlean_check'
-    | 'prismpm_check'
-    | 'lexlean_build'
-    | 'prismpm_build_locked'
-    | 'lexlean_verify'
-    | 'prismpm_verify'
-    | 'hologram_inspect'
-    | 'hologram_verify'
-    | 'hologram_plan'
-    | 'hologram_run'
-    | 'prismpm_export_browser'
-    | 'uorust_project';
+  commandId: CanonicalCommandId;
   stageId: WorkflowStageId;
   stageContractName: WorkflowStageContractName;
   executable: 'prismpm' | 'lexlean' | 'hologram' | 'uorust' | 'node';
   fixedArgs: readonly string[];
+  windmillRunnable: string;
   windmillFlowPath: string;
+  allowedWorkspaces: readonly [typeof ALLOWED_WINDMILL_WORKSPACE];
+  requiresOperatorApproval: boolean;
   description: string;
   establishesVerification: boolean;
 }
@@ -41,7 +52,10 @@ export const FIXED_WINDMILL_COMMAND_REGISTRY: readonly FixedRegistryEntry[] = [
     stageContractName: 'INTAKE',
     executable: 'node',
     fixedArgs: ['backend/intake_validate.ts'],
+    windmillRunnable: 'backend/intake_validate.ts',
     windmillFlowPath: 'f/uor_foundry/prism_intake_validate',
+    allowedWorkspaces: [ALLOWED_WINDMILL_WORKSPACE],
+    requiresOperatorApproval: false,
     description: 'Validate sanitized project intake, input mode, and declared dependencies.',
     establishesVerification: false,
   },
@@ -50,9 +64,25 @@ export const FIXED_WINDMILL_COMMAND_REGISTRY: readonly FixedRegistryEntry[] = [
     stageId: 'specify',
     stageContractName: 'SPECIFY',
     executable: 'lexlean',
-    fixedArgs: ['fmt', '--check'],
+    fixedArgs: ['fmt', '--check', '--all'],
+    windmillRunnable: 'backend/prism_stage_dispatch.ts',
     windmillFlowPath: 'f/uor_foundry/prism_specify_validate',
-    description: 'Validate authoritative .lex.tex / Cargo / Guided spec formatting and bounds.',
+    allowedWorkspaces: [ALLOWED_WINDMILL_WORKSPACE],
+    requiresOperatorApproval: true,
+    description: 'Validate authoritative .lex.tex formatting and closed-language bounds (`lexlean fmt --check --all`).',
+    establishesVerification: false,
+  },
+  {
+    commandId: 'uorust_project',
+    stageId: 'specify',
+    stageContractName: 'SPECIFY',
+    executable: 'uorust',
+    fixedArgs: ['project'],
+    windmillRunnable: 'backend/prism_stage_dispatch.ts',
+    windmillFlowPath: 'f/uor_foundry/uorust_model_workspace',
+    allowedWorkspaces: [ALLOWED_WINDMILL_WORKSPACE],
+    requiresOperatorApproval: true,
+    description: 'Project pinned Cargo workspace AST & lockfile via model/routes.toml (`uorust project <ws> --out <dir>`).',
     establishesVerification: false,
   },
   {
@@ -61,8 +91,11 @@ export const FIXED_WINDMILL_COMMAND_REGISTRY: readonly FixedRegistryEntry[] = [
     stageContractName: 'LOCK',
     executable: 'prismpm',
     fixedArgs: ['lock', '--check'],
+    windmillRunnable: 'backend/prism_stage_dispatch.ts',
     windmillFlowPath: 'f/uor_foundry/prism_lock_check',
-    description: 'Verify committed prismpm.lock / lexlean.lock / standards.lock / Cargo.lock pins.',
+    allowedWorkspaces: [ALLOWED_WINDMILL_WORKSPACE],
+    requiresOperatorApproval: true,
+    description: 'Verify committed prismpm.lock / lexlean.lock / standards.lock pins (`prismpm --project <path> lock --check`).',
     establishesVerification: false,
   },
   {
@@ -70,9 +103,12 @@ export const FIXED_WINDMILL_COMMAND_REGISTRY: readonly FixedRegistryEntry[] = [
     stageId: 'check',
     stageContractName: 'CHECK',
     executable: 'lexlean',
-    fixedArgs: ['check'],
+    fixedArgs: ['check', '--all'],
+    windmillRunnable: 'backend/prism_stage_dispatch.ts',
     windmillFlowPath: 'f/uor_foundry/lexlean_check',
-    description: 'Closed-language grammar, closure, and type check (never verification).',
+    allowedWorkspaces: [ALLOWED_WINDMILL_WORKSPACE],
+    requiresOperatorApproval: true,
+    description: 'Closed-language grammar, closure, and type check (`lexlean check --all`; never verification).',
     establishesVerification: false,
   },
   {
@@ -81,8 +117,11 @@ export const FIXED_WINDMILL_COMMAND_REGISTRY: readonly FixedRegistryEntry[] = [
     stageContractName: 'CHECK',
     executable: 'prismpm',
     fixedArgs: ['check'],
+    windmillRunnable: 'backend/prism_stage_dispatch.ts',
     windmillFlowPath: 'f/uor_foundry/prismpm_check',
-    description: 'Static PrismPM model validation before build (never verification).',
+    allowedWorkspaces: [ALLOWED_WINDMILL_WORKSPACE],
+    requiresOperatorApproval: true,
+    description: 'Static PrismPM model validation before build (`prismpm --project <path> check`; never verification).',
     establishesVerification: false,
   },
   {
@@ -90,9 +129,12 @@ export const FIXED_WINDMILL_COMMAND_REGISTRY: readonly FixedRegistryEntry[] = [
     stageId: 'build',
     stageContractName: 'BUILD',
     executable: 'lexlean',
-    fixedArgs: ['build'],
+    fixedArgs: ['build', '--all'],
+    windmillRunnable: 'backend/prism_stage_dispatch.ts',
     windmillFlowPath: 'f/uor_foundry/lexlean_build',
-    description: 'Emit Lean 4, LaTeX, source maps, and semantic-module IR (never verification).',
+    allowedWorkspaces: [ALLOWED_WINDMILL_WORKSPACE],
+    requiresOperatorApproval: true,
+    description: 'Emit Lean 4, LaTeX, source maps, and semantic-module IR (`lexlean build --all`; never verification).',
     establishesVerification: false,
   },
   {
@@ -101,7 +143,10 @@ export const FIXED_WINDMILL_COMMAND_REGISTRY: readonly FixedRegistryEntry[] = [
     stageContractName: 'BUILD',
     executable: 'prismpm',
     fixedArgs: ['build', '--locked'],
+    windmillRunnable: 'backend/prism_stage_dispatch.ts',
     windmillFlowPath: 'f/uor_foundry/prismpm_build_locked',
+    allowedWorkspaces: [ALLOWED_WINDMILL_WORKSPACE],
+    requiresOperatorApproval: true,
     description: 'Compile Cargo crate, import-free Core-Wasm, HOLOVIEW, and .holo archive under locked inputs.',
     establishesVerification: false,
   },
@@ -110,8 +155,11 @@ export const FIXED_WINDMILL_COMMAND_REGISTRY: readonly FixedRegistryEntry[] = [
     stageId: 'verify',
     stageContractName: 'VERIFY',
     executable: 'lexlean',
-    fixedArgs: ['verify'],
+    fixedArgs: ['verify', '--all'],
+    windmillRunnable: 'backend/prism_stage_dispatch.ts',
     windmillFlowPath: 'f/uor_foundry/lexlean_verify',
+    allowedWorkspaces: [ALLOWED_WINDMILL_WORKSPACE],
+    requiresOperatorApproval: true,
     description: 'Replay proofs in leanprover/lean4:v4.32.1 + leanchecker and audit #print axioms.',
     establishesVerification: true,
   },
@@ -121,7 +169,10 @@ export const FIXED_WINDMILL_COMMAND_REGISTRY: readonly FixedRegistryEntry[] = [
     stageContractName: 'VERIFY',
     executable: 'prismpm',
     fixedArgs: ['verify'],
+    windmillRunnable: 'backend/prism_stage_dispatch.ts',
     windmillFlowPath: 'f/uor_foundry/prismpm_verify',
+    allowedWorkspaces: [ALLOWED_WINDMILL_WORKSPACE],
+    requiresOperatorApproval: true,
     description: 'Independent PrismPM verify gate across Lean, LCNF, Core-Wasm, and acceptance vectors.',
     establishesVerification: true,
   },
@@ -130,9 +181,12 @@ export const FIXED_WINDMILL_COMMAND_REGISTRY: readonly FixedRegistryEntry[] = [
     stageId: 'inspect',
     stageContractName: 'INSPECT',
     executable: 'hologram',
-    fixedArgs: ['inspect', '--json'],
+    fixedArgs: ['--json', 'inspect'],
+    windmillRunnable: 'backend/prism_stage_dispatch.ts',
     windmillFlowPath: 'f/uor_foundry/hologram_inspect',
-    description: 'Inspect physical HOLO v4 / UORC v5 archive structure and SHA-256/blake3 sections without executing.',
+    allowedWorkspaces: [ALLOWED_WINDMILL_WORKSPACE],
+    requiresOperatorApproval: true,
+    description: 'Inspect physical HOLO v4 / UORC v5 archive structure via `hologram --json inspect <ref>`.',
     establishesVerification: false,
   },
   {
@@ -140,9 +194,12 @@ export const FIXED_WINDMILL_COMMAND_REGISTRY: readonly FixedRegistryEntry[] = [
     stageId: 'inspect',
     stageContractName: 'INSPECT',
     executable: 'hologram',
-    fixedArgs: ['verify', '--json'],
+    fixedArgs: ['--json', 'verify', '--path'],
+    windmillRunnable: 'backend/prism_stage_dispatch.ts',
     windmillFlowPath: 'f/uor_foundry/hologram_verify',
-    description: 'Validate archive directory hashes and extension contracts via Hologram Live.',
+    allowedWorkspaces: [ALLOWED_WINDMILL_WORKSPACE],
+    requiresOperatorApproval: true,
+    description: 'Validate archive directory hashes and extension contracts via `hologram --json verify --path <ref>`.',
     establishesVerification: true,
   },
   {
@@ -150,9 +207,12 @@ export const FIXED_WINDMILL_COMMAND_REGISTRY: readonly FixedRegistryEntry[] = [
     stageId: 'preview',
     stageContractName: 'PREVIEW',
     executable: 'hologram',
-    fixedArgs: ['plan', '--json'],
+    fixedArgs: ['--json', 'holo', 'plan'],
+    windmillRunnable: 'backend/prism_stage_dispatch.ts',
     windmillFlowPath: 'f/uor_foundry/hologram_plan',
-    description: 'Payload-free execution planning prior to sandboxed Core-Wasm acceptance.',
+    allowedWorkspaces: [ALLOWED_WINDMILL_WORKSPACE],
+    requiresOperatorApproval: true,
+    description: 'Payload-free execution planning via `hologram --json holo plan <ref>` prior to sandboxed run.',
     establishesVerification: false,
   },
   {
@@ -160,9 +220,25 @@ export const FIXED_WINDMILL_COMMAND_REGISTRY: readonly FixedRegistryEntry[] = [
     stageId: 'preview',
     stageContractName: 'PREVIEW',
     executable: 'hologram',
-    fixedArgs: ['run', '--json'],
+    fixedArgs: ['--json', 'run', '--output-format', 'json'],
+    windmillRunnable: 'backend/prism_stage_dispatch.ts',
     windmillFlowPath: 'f/uor_foundry/hologram_run',
-    description: 'Execute import-free Core-Wasm guest inside fuel/memory/deadline sandbox.',
+    allowedWorkspaces: [ALLOWED_WINDMILL_WORKSPACE],
+    requiresOperatorApproval: true,
+    description: 'Execute import-free Core-Wasm guest inside fuel/memory/deadline sandbox (`hologram --json run --output-format json <ref>`).',
+    establishesVerification: false,
+  },
+  {
+    commandId: 'prism_review_qualify',
+    stageId: 'review',
+    stageContractName: 'REVIEW',
+    executable: 'node',
+    fixedArgs: ['backend/workflow_dispatch.ts'],
+    windmillRunnable: 'backend/workflow_dispatch.ts',
+    windmillFlowPath: 'f/uor_foundry/prism_review_qualify',
+    allowedWorkspaces: [ALLOWED_WINDMILL_WORKSPACE],
+    requiresOperatorApproval: true,
+    description: 'Fail-closed human qualification & acceptance gate validation prior to browser export.',
     establishesVerification: false,
   },
   {
@@ -171,25 +247,188 @@ export const FIXED_WINDMILL_COMMAND_REGISTRY: readonly FixedRegistryEntry[] = [
     stageContractName: 'EXPORT_RELEASE',
     executable: 'prismpm',
     fixedArgs: ['export-browser'],
+    windmillRunnable: 'backend/prism_stage_dispatch.ts',
     windmillFlowPath: 'f/uor_foundry/prismpm_export_browser',
+    allowedWorkspaces: [ALLOWED_WINDMILL_WORKSPACE],
+    requiresOperatorApproval: true,
     description: 'Export verified immutable browser bundle & HOLOVIEW artifacts after human release approval.',
-    establishesVerification: false,
-  },
-  {
-    commandId: 'uorust_project',
-    stageId: 'specify',
-    stageContractName: 'SPECIFY',
-    executable: 'uorust',
-    fixedArgs: ['project'],
-    windmillFlowPath: 'f/uor_foundry/uorust_model_workspace',
-    description: 'Project pinned Cargo workspace AST & lockfile via model/routes.toml (non-defaulting refusals).',
     establishesVerification: false,
   },
 ] as const;
 
+export const CANONICAL_COMMAND_BY_ID: Record<CanonicalCommandId, FixedRegistryEntry> =
+  Object.fromEntries(
+    FIXED_WINDMILL_COMMAND_REGISTRY.map((entry) => [entry.commandId, entry])
+  ) as Record<CanonicalCommandId, FixedRegistryEntry>;
+
+export interface CanonicalWorkflowStageSpec {
+  index: number;
+  stageContractName: WorkflowStageContractName;
+  stageId: WorkflowStageId;
+  uorGate: string;
+  runnable: string;
+  fixedCommandId: CanonicalCommandId;
+  note?: string;
+  failClosed?: boolean;
+}
+
+export const CANONICAL_WORKFLOW_STAGES: readonly CanonicalWorkflowStageSpec[] = [
+  {
+    index: 1,
+    stageContractName: 'INTAKE',
+    stageId: 'intake',
+    uorGate: 'REGISTER',
+    runnable: 'backend/intake_validate.ts',
+    fixedCommandId: 'prism_intake_validate',
+  },
+  {
+    index: 2,
+    stageContractName: 'SPECIFY',
+    stageId: 'specify',
+    uorGate: 'REVIEW',
+    runnable: 'backend/prism_stage_dispatch.ts',
+    fixedCommandId: 'prism_specify_validate',
+  },
+  {
+    index: 3,
+    stageContractName: 'LOCK',
+    stageId: 'lock',
+    uorGate: 'REVIEW',
+    runnable: 'backend/prism_stage_dispatch.ts',
+    fixedCommandId: 'prism_lock_check',
+  },
+  {
+    index: 4,
+    stageContractName: 'CHECK',
+    stageId: 'check',
+    uorGate: 'AUTHORIZE TEST',
+    runnable: 'backend/prism_stage_dispatch.ts',
+    fixedCommandId: 'prismpm_check',
+    note: 'Check never certifies verification.',
+  },
+  {
+    index: 5,
+    stageContractName: 'BUILD',
+    stageId: 'build',
+    uorGate: 'EXECUTE',
+    runnable: 'backend/prism_stage_dispatch.ts',
+    fixedCommandId: 'prismpm_build_locked',
+    note: 'Build never equates to verification.',
+  },
+  {
+    index: 6,
+    stageContractName: 'VERIFY',
+    stageId: 'verify',
+    uorGate: 'VERIFY EVIDENCE',
+    runnable: 'backend/prism_stage_dispatch.ts',
+    fixedCommandId: 'prismpm_verify',
+  },
+  {
+    index: 7,
+    stageContractName: 'INSPECT',
+    stageId: 'inspect',
+    uorGate: 'VERIFY EVIDENCE',
+    runnable: 'backend/prism_stage_dispatch.ts',
+    fixedCommandId: 'hologram_inspect',
+  },
+  {
+    index: 8,
+    stageContractName: 'PREVIEW',
+    stageId: 'preview',
+    uorGate: 'EXECUTE',
+    runnable: 'backend/prism_stage_dispatch.ts',
+    fixedCommandId: 'hologram_run',
+  },
+  {
+    index: 9,
+    stageContractName: 'REVIEW',
+    stageId: 'review',
+    uorGate: 'QUALIFY',
+    runnable: 'backend/workflow_dispatch.ts',
+    fixedCommandId: 'prism_review_qualify',
+  },
+  {
+    index: 10,
+    stageContractName: 'EXPORT_RELEASE',
+    stageId: 'export_release',
+    uorGate: 'REVIEW RELEASE',
+    runnable: 'backend/prism_stage_dispatch.ts',
+    fixedCommandId: 'prismpm_export_browser',
+    failClosed: true,
+  },
+] as const;
+
+/**
+ * Generates the canonical Windmill flow proposal JSON from the single registry
+ * and pinned repository manifest so zero drift can occur between code and flow JSON.
+ */
+export function buildCanonicalPrismFlowManifest() {
+  return {
+    schema: 'uor.foundry.windmill-flow-proposal.v1',
+    generatedBy: 'src/shared/adapters/windmillCommandRegistry.ts via scripts/prepare-windmill-app.mjs',
+    epistemicCondition: 'PROPOSED',
+    registrationStatus: 'PREPARED_NOT_REGISTERED',
+    workspace: ALLOWED_WINDMILL_WORKSPACE,
+    flowPath: 'f/uor_foundry/prism_hologram_delivery',
+    summary: '10-stage fail-closed Prism source-to-Hologram DAG using fixed allowlisted CLI subcommands.',
+    toolchainPins: {
+      prismpm: `UOR-Foundation/PrismPM@${CANONICAL_TOOLCHAIN_PIN_MAP.prismpm}`,
+      lexlean: `UOR-Foundation/LexLean@${CANONICAL_TOOLCHAIN_PIN_MAP.lexlean}`,
+      foundry: `UOR-Foundation/foundry@${CANONICAL_TOOLCHAIN_PIN_MAP.foundry}`,
+      hologramLive: `Hologram-Technologies/hologram-live@${CANONICAL_TOOLCHAIN_PIN_MAP['hologram-live']}`,
+      uorust: `afflom/UORust@${CANONICAL_TOOLCHAIN_PIN_MAP.uorust}`,
+      lean: 'leanprover/lean4:v4.32.1',
+    },
+    stages: CANONICAL_WORKFLOW_STAGES.map((stage) => ({
+      index: stage.index,
+      stageContractName: stage.stageContractName,
+      stageId: stage.stageId,
+      uorGate: stage.uorGate,
+      runnable: stage.runnable,
+      fixedCommandId: stage.fixedCommandId,
+      ...(stage.note ? { note: stage.note } : {}),
+      ...(stage.failClosed !== undefined ? { failClosed: stage.failClosed } : {}),
+    })),
+  };
+}
+
+/**
+ * Builds the exact argv array using upstream-verified CLI syntax for each pinned tool.
+ */
+export function buildValidatedCommandArgv(
+  entry: FixedRegistryEntry,
+  relPath: string
+): string[] {
+  const holoRef = `${relPath}/dist/app.holo`;
+  switch (entry.executable) {
+    case 'prismpm':
+      if (entry.commandId === 'prismpm_export_browser') {
+        return [
+          'prismpm',
+          '--project',
+          relPath,
+          'export-browser',
+          holoRef,
+          '--output',
+          `${relPath}/dist/browser`,
+        ];
+      }
+      return ['prismpm', '--project', relPath, ...entry.fixedArgs];
+    case 'lexlean':
+      return ['lexlean', '--project', `${relPath}/lexlean.toml`, ...entry.fixedArgs];
+    case 'hologram':
+      return ['hologram', ...entry.fixedArgs, holoRef];
+    case 'uorust':
+      return ['uorust', 'project', relPath, '--out', `${relPath}/.prism/projection`];
+    case 'node':
+      return ['node', ...entry.fixedArgs, '--project', relPath];
+  }
+}
+
 export interface FixedCommandDispatchRequest {
   commandId?: string;
   rawCommandString?: string;
+  workspace?: string;
   projectRelativePath: string;
   sourceRevision: string;
 }
@@ -208,12 +447,21 @@ const SAFE_REVISION_REGEX = /^[a-zA-Z0-9._/@:-]{4,128}$/;
 
 /**
  * Validates any execution request strictly against the fixed Windmill command registry.
- * Rejects arbitrary shell strings, chat-supplied commands, path traversal (`..`), or
- * unallowlisted flags.
+ * Rejects arbitrary shell strings, chat-supplied commands, path traversal (`..`),
+ * wrong Windmill workspace targets, or unallowlisted flags.
  */
 export function validateFixedRegistryCommand(
   params: FixedCommandDispatchRequest
 ): CommandValidationResult {
+  const workspace = (params.workspace ?? ALLOWED_WINDMILL_WORKSPACE).trim();
+  if (workspace !== ALLOWED_WINDMILL_WORKSPACE) {
+    return {
+      allowed: false,
+      code: 'COMMAND_REGISTRY_REFUSAL',
+      reason: `Refused unauthorized Windmill workspace "${workspace}". Only "${ALLOWED_WINDMILL_WORKSPACE}" is permitted.`,
+    };
+  }
+
   if (params.rawCommandString !== undefined) {
     return {
       allowed: false,
@@ -256,12 +504,7 @@ export function validateFixedRegistryCommand(
     };
   }
 
-  const validatedArgv = [
-    entry.executable,
-    ...entry.fixedArgs,
-    '--project',
-    relPath,
-  ];
+  const validatedArgv = buildValidatedCommandArgv(entry, relPath);
 
   return {
     allowed: true,

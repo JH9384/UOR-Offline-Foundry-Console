@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   AlertTriangle,
   BookmarkPlus,
@@ -104,6 +104,20 @@ export const LivePreviewPanel: React.FC<LivePreviewPanelProps> = ({
   );
   const [simResult, setSimResult] = useState<string | null>(null);
 
+  const projectArtifacts = artifacts.filter((a) => a.projectId === project.id);
+  const defaultArtifactId =
+    projectArtifacts.find((a) => a.outputClass === 'physical_holo_archive')?.id ??
+    projectArtifacts[0]?.id ??
+    '';
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string>(defaultArtifactId);
+
+  useEffect(() => {
+    setSelectedArtifactId(defaultArtifactId);
+  }, [project.id, defaultArtifactId]);
+
+  const selectedArtifact =
+    projectArtifacts.find((a) => a.id === selectedArtifactId) ?? projectArtifacts[0];
+
   const component = ENGINEERING_COMPONENTS.find((c) => c.id === project.componentId);
   const isUnverified = component?.epistemicCondition === 'UNVERIFIED';
 
@@ -115,6 +129,7 @@ export const LivePreviewPanel: React.FC<LivePreviewPanelProps> = ({
     run,
     artifacts,
     verifications,
+    selectedArtifactId: selectedArtifact?.id,
   });
 
   const handleElementClick = (el: PreviewElementRef) => {
@@ -370,7 +385,7 @@ export const LivePreviewPanel: React.FC<LivePreviewPanelProps> = ({
         </div>
 
         {/* Artifact Preview Adapter Selector */}
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-1 overflow-x-auto pb-0.5">
             {PREVIEW_KINDS.map((k) => {
               const active = previewKind === k.id;
@@ -393,19 +408,51 @@ export const LivePreviewPanel: React.FC<LivePreviewPanelProps> = ({
             })}
           </div>
 
-          <button
-            type="button"
-            onClick={() =>
-              setPreviewError((prev) =>
-                prev
-                  ? null
-                  : 'Simulated preview error: artifact bundle stream unavailable in local sandbox.'
-              )
-            }
-            className="text-[10px] font-mono text-slate-500 hover:text-slate-300 whitespace-nowrap shrink-0"
-          >
-            {previewError ? 'Clear Error State' : 'Test Error State'}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            {projectArtifacts.length > 0 && (
+              <div className="flex items-center gap-1.5">
+                <label
+                  htmlFor="preview-artifact-selector"
+                  className="text-[10px] font-mono text-slate-500"
+                >
+                  Artifact
+                </label>
+                <select
+                  id="preview-artifact-selector"
+                  data-testid="preview-artifact-selector"
+                  value={selectedArtifact?.id ?? ''}
+                  onChange={(e) => {
+                    setSelectedArtifactId(e.target.value);
+                    if (previewKind === 'ui-build') {
+                      setPreviewKind('document');
+                    }
+                  }}
+                  aria-label="Inspect typed project artifact"
+                  className="px-2 py-1 text-[11px] font-mono bg-[#090D14] border border-slate-700 rounded text-slate-200 max-w-[260px]"
+                >
+                  {projectArtifacts.map((art) => (
+                    <option key={art.id} value={art.id}>
+                      [{art.outputClass}] {art.artifactName} · {art.artifactState}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() =>
+                setPreviewError((prev) =>
+                  prev
+                    ? null
+                    : 'Simulated preview error: artifact bundle stream unavailable in local sandbox.'
+                )
+              }
+              className="text-[10px] font-mono text-slate-500 hover:text-slate-300 whitespace-nowrap shrink-0"
+            >
+              {previewError ? 'Clear Error State' : 'Test Error State'}
+            </button>
+          </div>
         </div>
 
         {/* Named Checkpoints Drawer */}

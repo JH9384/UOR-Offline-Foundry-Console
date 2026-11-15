@@ -56,14 +56,43 @@ function inferProjectSourcePins(project: ProjectRecord): ProjectSourcePin[] {
   ];
 }
 
+function findAuthenticatedVerifierSuite(params: {
+  verifications: VerificationSuiteRecord[];
+  project: ProjectRecord;
+  matchAuthorities: string[];
+  matchSuiteKeywords?: string[];
+  expectedArtifactSha?: string;
+}): VerificationSuiteRecord | undefined {
+  return params.verifications.find((v) => {
+    if (v.projectId !== params.project.id) return false;
+    if (v.status !== 'PASS') return false;
+    if (v.isSimulated || v.authenticationStatus !== 'AUTHENTICATED_BY_VERIFIER') return false;
+    if (v.sourceRevision !== params.project.sourceRevision) return false;
+    if (params.expectedArtifactSha && v.artifactHash && v.artifactHash !== params.expectedArtifactSha) {
+      return false;
+    }
+    const authorityMatch = params.matchAuthorities.includes(v.authority);
+    const keywordMatch =
+      !params.matchSuiteKeywords ||
+      params.matchSuiteKeywords.length === 0 ||
+      params.matchSuiteKeywords.some(
+        (kw) =>
+          (v.suiteId ?? '').toLowerCase().includes(kw.toLowerCase()) ||
+          v.suiteName.toLowerCase().includes(kw.toLowerCase())
+      );
+    return authorityMatch && keywordMatch;
+  });
+}
+
 /**
  * Layer 5: Project-specific Source Review & Compliance Assessment.
  *
  * Enforces:
- * - Project-specific applicability assessment before any requirement is evaluated.
- * - Strict separation between source docs, test evidence, independent verifier evidence,
- *   compliance status, and human production release authorization.
- * - Source documentation or AI claims NEVER mark a requirement or release satisfied.
+ * - Independent per-requirement evaluation (NO global `hasVerifiedAll` shortcut).
+ * - Explicit binding to acceptanceId, sourceUrl, pinnedRevision, applicableVerifier,
+ *   executionIdentity, evidenceRecord, and evaluationResult.
+ * - Preserves unresolved / untested / refuted upstream source claims explicitly.
+ * - Never auto-promotes source integration statuses above REFERENCE ONLY / CANDIDATE without live verification.
  */
 export class SourceComplianceService {
   getAllReviewedSources() {
@@ -85,10 +114,11 @@ export class SourceComplianceService {
       trustContext
     );
 
+    const byId = new Map(REVIEWED_SOURCES_REGISTER.map((s) => [s.id, s]));
     const pins = inferProjectSourcePins(project);
     const sourceIds = Array.from(new Set(pins.map((p) => p.sourceId)));
     const pinnedRevisions = pins.map((p) => {
-      const record = REVIEWED_SOURCES_REGISTER.find((r) => r.id === p.sourceId)!;
+      const record = byId.get(p.sourceId)!;
       return {
         sourceId: record.id,
         name: record.name,
@@ -100,100 +130,221 @@ export class SourceComplianceService {
     });
 
     const projectArtifacts = artifacts.filter((a) => a.projectId === project.id);
-    const primaryArtifact = projectArtifacts[0];
+    const primaryArtifact =
+      projectArtifacts.find((a) => a.outputClass === 'physical_holo_archive') ?? projectArtifacts[0];
     const hasDocumentedSha256 = Boolean(
       primaryArtifact &&
         primaryArtifact.digestMode === 'DOCUMENTED_REFERENCE_DIGEST' &&
         /^[0-9a-f]{64}$/.test(primaryArtifact.sha256Digest)
     );
-
-    const hasVerifiedAll = authoritySummary.overallVerificationState === 'VERIFIED';
+    const expectedArtifactSha = hasDocumentedSha256 ? primaryArtifact?.sha256Digest : undefined;
 
     const usesRule30 = sourceIds.includes('rule30');
     const usesPrismDevrel = sourceIds.includes('prism-devrel');
     const usesStitch = sourceIds.includes('stitch');
     const usesUorust = sourceIds.includes('uorust');
 
+    const lexleanSuite = findAuthenticatedVerifierSuite({
+      verifications,
+      project,
+      matchAuthorities: ['LexLean'],
+      expectedArtifactSha,
+    });
+    const prismpmSuite = findAuthenticatedVerifierSuite({
+      verifications,
+      project,
+      matchAuthorities: ['PrismPM'],
+      expectedArtifactSha,
+    });
+    const hologramCoreSuite = findAuthenticatedVerifierSuite({
+      verifications,
+      project,
+      matchAuthorities: ['Hologram Forge Application Core', 'Forge Kernel'],
+      expectedArtifactSha,
+    });
+    const stitchCommitPass = Boolean(
+      hasDocumentedSha256 &&
+        primaryArtifact?.sha256Verified &&
+        primaryArtifact?.fileExistsOnDisk &&
+        (prismpmSuite || hologramCoreSuite)
+    );
+
+    const rule30Src = byId.get('rule30')!;
+    const prismDevrelSrc = byId.get('prism-devrel')!;
+    const stitchSrc = byId.get('stitch')!;
+    const uorustSrc = byId.get('uorust')!;
+    const prismpmSrc = byId.get('prismpm')!;
+
     const requirements: ProjectComplianceRequirement[] = [
+      {
+        id: 'REQ-PRISMPM-VERIFICATION-GATE',
+        sourceId: 'prismpm',
+        acceptanceId: 'PrismPM-verify / RELEASE-STATUS',
+        sourceUrl: prismpmSrc.canonicalUrl,
+        pinnedRevision: prismpmSrc.reviewedCommitSha,
+        title: 'Independent PrismPM & Lean 4.32.1 Verification (Not Check/Build)',
+        applicable: sourceIds.includes('prismpm') || sourceIds.includes('lexlean'),
+        applicabilityRationale:
+          'Applicable: project produces or verifies PrismPM / LexLean outputs.',
+        applicableVerifier: 'prismpm verify + lexlean verify --all (leanchecker)',
+        executionIdentity:
+          prismpmSuite?.authenticExecutionRef ??
+          lexleanSuite?.authenticExecutionRef ??
+          'NO_AUTHENTICATED_EXECUTION_REF',
+        evidenceRecord:
+          prismpmSuite?.evidenceId ??
+          lexleanSuite?.evidenceId ??
+          'NO_VERIFIER_EVIDENCE_RECORDED',
+        evaluationResult: prismpmSuite && lexleanSuite ? 'PASS' : 'BLOCKED',
+        satisfied: Boolean(prismpmSuite && lexleanSuite),
+        statusLabel: prismpmSuite && lexleanSuite ? 'SATISFIED' : 'BLOCKED',
+        gapReason:
+          prismpmSuite && lexleanSuite
+            ? undefined
+            : 'Requires independent authenticated PrismPM verify AND LexLean leanchecker evidence bound to current revision.',
+      },
       {
         id: 'REQ-RULE30-AXIOM-FRONTIER',
         sourceId: 'rule30',
-        title: 'Constructive Axiom Audit & Open-Claim Frontier Separation',
+        acceptanceId: 'rule30:frontier.toml / problem1',
+        sourceUrl: rule30Src.canonicalUrl,
+        pinnedRevision: rule30Src.reviewedCommitSha,
+        title: 'Constructive Axiom Audit & Open-Claim Frontier Separation (problem1 / aperiodic-compensation)',
         applicable: usesRule30,
         applicabilityRationale: usesRule30
           ? `Applicable: project "${project.name}" references formal research / LexLean verification models.`
           : 'Not applicable: project does not declare formal cellular/proof frontier inputs.',
+        applicableVerifier: 'leanchecker + check_no_choice.py ({propext, Quot.sound} only)',
+        executionIdentity: lexleanSuite?.authenticExecutionRef ?? 'OPEN_FRONTIER_UNPROVED',
+        evidenceRecord: 'rule30:frontier.toml (problem1 UNTESTED, aperiodic-compensation BLOCKED)',
+        evaluationResult: usesRule30 ? 'UNTESTED' : 'NOT APPLICABLE',
         satisfied: false,
-        statusLabel: !usesRule30 ? 'NOT APPLICABLE' : hasVerifiedAll ? 'SATISFIED' : 'BLOCKED',
+        statusLabel: !usesRule30 ? 'NOT APPLICABLE' : 'BLOCKED',
         gapReason: usesRule30
-          ? hasVerifiedAll
-            ? undefined
-            : 'Local Lean 4.32.1 `leanchecker` & `check_no_choice.py` execution not present in browser preview; Prize Problem 1 / open conjectures cannot be marked proved.'
+          ? 'Rule 30 Prize Problem 1 remains UNTESTED and aperiodic-compensation remains BLOCKED in frontier.toml; constructive axiom audit cannot mark open conjectures proved.'
           : undefined,
       },
       {
         id: 'REQ-PRISM-DEVREL-FACETS',
         sourceId: 'prism-devrel',
-        title: 'Source-Pinned Facet Coverage & uor/template-contract/1 SDK Gate (DR-01..DR-18)',
+        acceptanceId: 'DR-11 / Foundation.DevRel.V1',
+        sourceUrl: prismDevrelSrc.canonicalUrl,
+        pinnedRevision: prismDevrelSrc.reviewedCommitSha,
+        title: 'Source-Pinned Facet Coverage & Catalog Verification (DR-01..DR-18 / Catalog)',
         applicable: usesPrismDevrel,
         applicabilityRationale: usesPrismDevrel
           ? `Applicable: project "${project.name}" uses Prism product / template synthesis metadata.`
           : 'Not applicable: project is not a Prism template product target.',
+        applicableVerifier: 'prismpm check + Catalog::catalogCovered',
+        executionIdentity: 'CATALOG_INCOMPLETE_UPSTREAM',
+        evidenceRecord: 'prism-devrel Catalog.lex.tex (DR-11 & Catalog gaps remain unresolved)',
+        evaluationResult: usesPrismDevrel ? 'BLOCKED' : 'NOT APPLICABLE',
         satisfied: false,
-        statusLabel: !usesPrismDevrel ? 'NOT APPLICABLE' : hasVerifiedAll ? 'SATISFIED' : 'GAP',
+        statusLabel: !usesPrismDevrel ? 'NOT APPLICABLE' : 'GAP',
         gapReason: usesPrismDevrel
-          ? hasVerifiedAll
-            ? undefined
-            : 'Simulated browser preview metadata cannot replace `prismpm template check` or Lean `Catalog::catalogCovered` verification.'
+          ? 'DR-11 / Catalog conformance obligations remain open in upstream prism-devrel; browser preview metadata never satisfies template verification.'
           : undefined,
       },
       {
         id: 'REQ-STITCH-COMMITMENT-RECOVERY',
         sourceId: 'stitch',
+        acceptanceId: 'stitch:C8/C10 (SHA-256 Commitment)',
+        sourceUrl: stitchSrc.canonicalUrl,
+        pinnedRevision: stitchSrc.reviewedCommitSha,
         title: 'Full SHA-256 Object Commitment & Deterministic State Replay Boundary (C8/C10)',
         applicable: usesStitch,
         applicabilityRationale: usesStitch
-          ? `Applicable universally to "${project.name}" artifact digests and local workspace checkpoints (P2P/relay features excluded).`
+          ? `Applicable to "${project.name}" artifact digests and local workspace checkpoints (P2P/relay excluded).`
           : 'Not applicable.',
-        satisfied: usesStitch && hasDocumentedSha256 && hasVerifiedAll,
+        applicableVerifier: 'node --test + on-disk SHA-256 recomputation',
+        executionIdentity:
+          stitchCommitPass
+            ? hologramCoreSuite?.authenticExecutionRef ?? prismpmSuite?.authenticExecutionRef ?? 'VERIFIED_SHA256'
+            : 'DIGEST_OR_DISK_UNVERIFIED',
+        evidenceRecord: primaryArtifact
+          ? `${primaryArtifact.id} (${primaryArtifact.digestMode})`
+          : 'NO_ARTIFACT_RECORDED',
+        evaluationResult: !usesStitch
+          ? 'NOT APPLICABLE'
+          : stitchCommitPass
+            ? 'PASS'
+            : 'BLOCKED',
+        satisfied: Boolean(usesStitch && stitchCommitPass),
         statusLabel: !usesStitch
           ? 'NOT APPLICABLE'
-          : hasDocumentedSha256 && hasVerifiedAll
+          : stitchCommitPass
             ? 'SATISFIED'
             : hasDocumentedSha256
               ? 'GAP'
               : 'BLOCKED',
         gapReason: usesStitch
-          ? !hasDocumentedSha256
-            ? 'Artifact digest uses SYNTHETIC_DEMO_DIGEST or UNAVAILABLE rather than verified content-addressed SHA-256.'
-            : hasVerifiedAll
-              ? undefined
-              : 'Authoritative custody & independent verification suites remain unverified locally.'
+          ? stitchCommitPass
+            ? undefined
+            : !hasDocumentedSha256
+              ? 'Artifact uses SYNTHETIC_DEMO_DIGEST or UNAVAILABLE rather than verified on-disk SHA-256 commitment.'
+              : 'On-disk artifact file presence and independent verifier authentication have not completed.'
+          : undefined,
+      },
+      {
+        id: 'REQ-STITCH-UNRESOLVED-CLAIMS',
+        sourceId: 'stitch',
+        acceptanceId: 'stitch:C1..C6 Unresolved/Refuted Claims',
+        sourceUrl: stitchSrc.canonicalUrl,
+        pinnedRevision: stitchSrc.reviewedCommitSha,
+        title: 'Preserved Stitch C1 (Untested), C2/C5 (Blocked), and C3/C4/C6 (Refuted) Source Boundaries',
+        applicable: usesStitch,
+        applicabilityRationale: usesStitch
+          ? 'Always tracked as explicit non-promoted boundary whenever stitch commitments are cited.'
+          : 'Not applicable.',
+        applicableVerifier: 'afflom/stitch upstream custody & formal proofs (not present)',
+        executionIdentity: 'UPSTREAM_CLAIMS_UNRESOLVED_OR_REFUTED',
+        evidenceRecord: 'stitch audit: C1 untested; C2/C5 blocked; C3/C4/C6 refuted',
+        evaluationResult: usesStitch ? 'REFUTED' : 'NOT APPLICABLE',
+        satisfied: false,
+        statusLabel: usesStitch ? 'BLOCKED' : 'NOT APPLICABLE',
+        gapReason: usesStitch
+          ? 'Stitch claims C1 (untested), C2/C5 (blocked), and C3/C4/C6 (refuted) remain explicitly non-satisfied and cannot be overridden by passing build checks.'
           : undefined,
       },
       {
         id: 'REQ-UORUST-SPAN-REFUSALS',
         sourceId: 'uorust',
-        title: 'Non-Defaulting Cargo Route Admission & Typed Source-Span Refusals (UE-01..UE-07)',
+        acceptanceId: 'UORust:UE-03/UE-06 (Route Admission)',
+        sourceUrl: uorustSrc.canonicalUrl,
+        pinnedRevision: uorustSrc.reviewedCommitSha,
+        title: 'Non-Defaulting Cargo Route Admission & Typed Source-Span Refusals (UE-01..UE-07, UE-03/UE-06)',
         applicable: usesUorust,
         applicabilityRationale: usesUorust
           ? `Applicable: project "${project.name}" models an existing Rust Cargo workspace.`
           : 'Not applicable: project does not target Cargo workspace translation.',
+        applicableVerifier: 'uorust project + cargo metadata (Mac Studio Windmill worker only)',
+        executionIdentity: 'WINDMILL_UORUST_NOT_CONNECTED',
+        evidenceRecord: 'uorust: UE-03/UE-06 blocked until Mac Studio Cargo workspace check executes',
+        evaluationResult: usesUorust ? 'BLOCKED' : 'NOT APPLICABLE',
         satisfied: false,
-        statusLabel: !usesUorust ? 'NOT APPLICABLE' : hasVerifiedAll ? 'SATISFIED' : 'BLOCKED',
+        statusLabel: !usesUorust ? 'NOT APPLICABLE' : 'BLOCKED',
         gapReason: usesUorust
-          ? hasVerifiedAll
-            ? undefined
-            : 'Live `cargo metadata` / `uorust` Windmill runnable (`f/uor_foundry/uorust_model_workspace`) is NOT CONNECTED and arbitrary Cargo builds are prohibited in browser preview.'
+          ? 'Live `cargo metadata` / `uorust` Windmill runnable (`f/uor_foundry/uorust_model_workspace`) is NOT CONNECTED and UE-03/UE-06 refusals remain blocked in browser preview.'
           : undefined,
       },
       {
         id: 'REQ-GOV-SEPARATION-OF-DUTIES',
-        sourceId: usesUorust ? 'uorust' : usesPrismDevrel ? 'prism-devrel' : 'rule30',
+        sourceId: usesUorust ? 'uorust' : usesPrismDevrel ? 'prism-devrel' : 'prismpm',
+        acceptanceId: 'UOR-GOV-RELEASE-01',
+        sourceUrl: prismpmSrc.canonicalUrl,
+        pinnedRevision: prismpmSrc.reviewedCommitSha,
         title: 'Fail-Closed Human Production Release Authorization (APPROVED_FOR_RELEASE)',
         applicable: true,
         applicabilityRationale:
           'Always applicable under UOR governance: documentation, tests, AI replies, and test approvals never certify production release.',
+        applicableVerifier: 'Signed human APPROVED_FOR_RELEASE + policy binding',
+        executionIdentity: authoritySummary.releaseEligible
+          ? 'AUTHORIZED_HUMAN_RELEASE'
+          : 'RELEASE_AUTHORIZATION_ABSENT',
+        evidenceRecord: authoritySummary.releaseEligible
+          ? 'APPROVED_FOR_RELEASE verified'
+          : authoritySummary.blockingReasons[0] ?? 'NO_APPROVED_FOR_RELEASE_RECORD',
+        evaluationResult: authoritySummary.releaseEligible ? 'PASS' : 'BLOCKED',
         satisfied: authoritySummary.releaseEligible,
         statusLabel: authoritySummary.releaseEligible ? 'SATISFIED' : 'BLOCKED',
         gapReason: authoritySummary.releaseEligible
@@ -203,25 +354,30 @@ export class SourceComplianceService {
       },
     ];
 
-    // Keep strict invariant: documentation / non-verified state cannot self-satisfy
     const sanitizedRequirements = requirements.map((r) =>
       !r.applicable
-        ? { ...r, satisfied: false, statusLabel: 'NOT APPLICABLE' as const }
-        : hasVerifiedAll
-          ? r
-          : { ...r, satisfied: false, statusLabel: r.statusLabel === 'SATISFIED' ? ('GAP' as const) : r.statusLabel }
+        ? {
+            ...r,
+            satisfied: false,
+            statusLabel: 'NOT APPLICABLE' as const,
+            evaluationResult: 'NOT APPLICABLE' as const,
+          }
+        : r
     );
 
     const coverageGaps = sanitizedRequirements
       .filter((r) => r.applicable && !r.satisfied && r.gapReason)
-      .map((r) => `${r.id}: ${r.gapReason}`);
+      .map((r) => `${r.id} [${r.acceptanceId}]: ${r.gapReason}`);
 
     const releaseBlockers = Array.from(
       new Set([
         ...authoritySummary.blockingReasons,
         ...pinnedRevisions
           .filter((p) => p.status !== 'QUALIFIED' && p.status !== 'CONNECTED')
-          .map((p) => `Source "${p.name}" (@ ${p.commitSha.slice(0, 8)}) has integration status ${p.status}.`),
+          .map(
+            (p) =>
+              `Source "${p.name}" (@ ${p.commitSha.slice(0, 8)}) has integration status ${p.status}.`
+          ),
       ])
     );
 

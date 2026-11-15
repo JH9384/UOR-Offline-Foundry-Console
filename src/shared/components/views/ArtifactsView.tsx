@@ -208,11 +208,11 @@ export const ArtifactsView: React.FC<ArtifactsViewProps> = ({
   const isHoloArtifactSelected = Boolean(
     activeArtifact &&
       (activeArtifact.artifactName.toLowerCase().includes('.holo') ||
-        activeArtifact.outputClass === 'binary_holo_archive' ||
+        activeArtifact.outputClass === 'physical_holo_archive' ||
         activeArtifact.artifactFormat.toLowerCase().includes('holo'))
   );
 
-  // Trigger an automatic Hologram v4 validation scan whenever a `.holo` file or
+  // Trigger an automatic Hologram v4 structural preflight scan whenever a `.holo` file or
   // buffered `.holo` artifact record is selected.
   useEffect(() => {
     let cancelled = false;
@@ -228,7 +228,7 @@ export const ArtifactsView: React.FC<ArtifactsViewProps> = ({
     if (!buffer) {
       setHoloInspection(null);
       setAutoScanStatus(
-        `Auto-Scan (${activeArtifact.artifactName}): awaiting local .holo file selection to inspect HOLO\\x04\\0 bytes, manifest, and SHA-256.`
+        `Structural Preflight Auto-Scan (${activeArtifact.artifactName}): awaiting local .holo file selection to inspect HOLO\\x04\\0 bytes, manifest, and SHA-256.`
       );
       return;
     }
@@ -237,12 +237,13 @@ export const ArtifactsView: React.FC<ArtifactsViewProps> = ({
     parseHologramV4Header(buffer, {
       expectedProjectId: activeProject?.id,
       expectedSourceRevision: activeProject?.sourceRevision,
+      isSyntheticFixture: activeArtifact.isSyntheticFixture,
     })
       .then((report) => {
         if (cancelled) return;
         setHoloInspection(report);
         setAutoScanStatus(
-          `Auto-Scan (${activeArtifact.artifactName}): ${report.status} (${report.byteLength} bytes · sha256:${report.sha256Hash.slice(0, 12)}...)`
+          `Structural Preflight (${activeArtifact.artifactName}): ${report.status}${report.isSyntheticFixture ? ' [SYNTHETIC FIXTURE]' : ''} (${report.byteLength} bytes · sha256:${report.sha256Hash.slice(0, 12)}...)`
         );
       })
       .finally(() => {
@@ -435,13 +436,15 @@ export const ArtifactsView: React.FC<ArtifactsViewProps> = ({
             <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 pb-4 border-b border-slate-800">
               <div className="min-w-0">
                 <div className="text-xs font-mono text-slate-400">
-                  {activeProject?.name ?? activeArtifact.projectId} · {activeArtifact.digestMode}
+                  {activeProject?.name ?? activeArtifact.projectId} · {activeArtifact.digestMode} ·{' '}
+                  <span className="text-sky-300">{activeArtifact.outputClass}</span>
                 </div>
                 <h3 className="font-display font-semibold text-base text-slate-100 mt-1">
                   {activeArtifact.artifactName}
                 </h3>
               </div>
               <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <StatusTag value={activeArtifact.artifactState} />
                 <StatusTag value={resolveArtifactStatus(activeArtifact)} />
                 <StatusTag value="BLOCKED" />
                 <button
@@ -610,14 +613,15 @@ export const ArtifactsView: React.FC<ArtifactsViewProps> = ({
                       buildHologramV4Buffer({
                         projectId: activeProject?.id ?? 'proj-prism-calc',
                         projectName: activeProject?.name ?? 'PrismPM Calculator Reference',
-                        sourceRevision: activeProject?.sourceRevision ?? 'prismpm/main@b8bbabcf',
+                        sourceRevision: activeProject?.sourceRevision ?? 'prismpm/main@6c876017',
+                        isSyntheticFixture: true,
                       }),
-                      'self-test HOLO v4 buffer'
+                      'synthetic fixture HOLO v4 buffer'
                     )
                   }
                   className="px-2.5 py-1.5 text-[11px] font-mono text-sky-300 border border-sky-500/35 hover:bg-sky-950/30 rounded"
                 >
-                  Test Valid `HOLO\x04\0` Bytes
+                  Run Structural Preflight (Synthetic `HOLO\x04\0`)
                 </button>
                 <button
                   type="button"
@@ -640,8 +644,9 @@ export const ArtifactsView: React.FC<ArtifactsViewProps> = ({
                       buildHologramV4Buffer({
                         projectId: activeProject?.id ?? 'proj-prism-calc',
                         projectName: activeProject?.name ?? 'PrismPM Calculator Reference',
-                        sourceRevision: activeProject?.sourceRevision ?? 'prismpm/main@b8bbabcf',
+                        sourceRevision: activeProject?.sourceRevision ?? 'prismpm/main@6c876017',
                         corruptManifest: true,
+                        isSyntheticFixture: true,
                       }),
                       'self-test corrupt v4 manifest'
                     )
@@ -656,22 +661,55 @@ export const ArtifactsView: React.FC<ArtifactsViewProps> = ({
                 <div
                   className={`p-3 rounded border text-xs space-y-2 ${
                     holoInspection.valid
-                      ? 'bg-emerald-950/20 border-emerald-500/35 text-emerald-200'
+                      ? 'bg-sky-950/25 border-sky-500/35 text-sky-100'
                       : 'bg-rose-950/25 border-rose-500/35 text-rose-200'
                   }`}
                   data-testid="holo-inspection-result"
                 >
-                  <div className="flex items-center gap-2 font-mono font-semibold">
-                    {holoInspection.valid ? (
-                      <FileCheck2 className="w-4 h-4 text-emerald-400 shrink-0" aria-hidden="true" />
-                    ) : (
-                      <FileWarning className="w-4 h-4 text-rose-400 shrink-0" aria-hidden="true" />
-                    )}
-                    <span>
-                      {holoInspection.status} {holoInspection.errorCode ? `(${holoInspection.errorCode})` : ''}
+                  <div className="flex flex-wrap items-center justify-between gap-2 font-mono font-semibold">
+                    <span className="flex items-center gap-2">
+                      {holoInspection.valid ? (
+                        <FileCheck2 className="w-4 h-4 text-sky-400 shrink-0" aria-hidden="true" />
+                      ) : (
+                        <FileWarning className="w-4 h-4 text-rose-400 shrink-0" aria-hidden="true" />
+                      )}
+                      <span>
+                        {holoInspection.status}{' '}
+                        {holoInspection.errorCode ? `(${holoInspection.errorCode})` : ''}
+                      </span>
                     </span>
+                    {holoInspection.isSyntheticFixture && (
+                      <span className="px-1.5 py-0.5 text-[10px] rounded border border-indigo-500/40 bg-indigo-950/50 text-indigo-200">
+                        SYNTHETIC FIXTURE · STRUCTURAL PREFLIGHT ONLY
+                      </span>
+                    )}
                   </div>
                   <p className="text-[11px]">{holoInspection.diagnostic}</p>
+                  {holoInspection.trustLayers && (
+                    <div
+                      className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1.5 pt-1 text-[10px] font-mono"
+                      data-testid="holo-trust-layers"
+                    >
+                      <div className="px-2 py-1 rounded bg-black/30 border border-slate-800">
+                        Structural preflight: {holoInspection.trustLayers.structuralPreflight}
+                      </div>
+                      <div className="px-2 py-1 rounded bg-black/30 border border-slate-800">
+                        Digest check: {holoInspection.trustLayers.contentDigestValidation}
+                      </div>
+                      <div className="px-2 py-1 rounded bg-black/30 border border-slate-800">
+                        Format parse: {holoInspection.trustLayers.archiveFormatParsing}
+                      </div>
+                      <div className="px-2 py-1 rounded bg-black/30 border border-slate-800 text-amber-300">
+                        Independent Hologram verify: {holoInspection.trustLayers.independentHologramVerification}
+                      </div>
+                      <div className="px-2 py-1 rounded bg-black/30 border border-slate-800 text-amber-300">
+                        PrismPM acceptance: {holoInspection.trustLayers.prismPmAcceptance}
+                      </div>
+                      <div className="px-2 py-1 rounded bg-black/30 border border-slate-800 text-rose-300">
+                        Release auth: {holoInspection.trustLayers.productionReleaseAuthorization}
+                      </div>
+                    </div>
+                  )}
                   {holoInspection.header && (
                     <div className="font-mono text-[10px] opacity-90 flex flex-wrap gap-x-3 gap-y-1">
                       <span>header: v{holoInspection.header.majorVersion}.{holoInspection.header.minorVersion}</span>

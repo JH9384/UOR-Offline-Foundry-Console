@@ -237,27 +237,52 @@ export const SourceCompliancePanel: React.FC<SourceCompliancePanelProps> = ({
         {/* Project-Specific Applicable Requirements Matrix */}
         <div className="space-y-2">
           <h3 className="text-xs font-medium text-slate-300">
-            Applicable Requirements (Applicability Assessed First)
+            Applicable Requirements (Evaluated Independently — Applicability Assessed First)
           </h3>
-          <div className="border border-slate-800 rounded overflow-hidden divide-y divide-slate-800 bg-[#0B0F17]">
+          <div
+            className="border border-slate-800 rounded overflow-hidden divide-y divide-slate-800 bg-[#0B0F17]"
+            data-testid="compliance-requirements-matrix"
+          >
             {assessment.requirements.map((req) => (
-              <div key={req.id} className="p-3.5 space-y-1.5 text-xs">
+              <div key={req.id} className="p-3.5 space-y-2 text-xs">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
+                  <div className="flex flex-wrap items-center gap-2 min-w-0">
                     <span className="font-mono text-[11px] text-slate-400 shrink-0">
                       {req.id}
                     </span>
+                    <span className="px-1.5 py-0.5 text-[10px] font-mono bg-[#111827] border border-slate-800 rounded text-sky-300">
+                      {req.acceptanceId}
+                    </span>
                     <span className="font-medium text-slate-100">{req.title}</span>
                   </div>
-                  <span
-                    className={`px-2 py-0.5 text-[10px] font-mono border rounded-sm shrink-0 ${requirementBadgeClass(
-                      req.statusLabel
-                    )}`}
-                  >
-                    {req.statusLabel}
-                  </span>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className="px-1.5 py-0.5 text-[10px] font-mono border border-slate-700 bg-slate-900 text-slate-300 rounded-sm">
+                      {req.evaluationResult}
+                    </span>
+                    <span
+                      className={`px-2 py-0.5 text-[10px] font-mono border rounded-sm ${requirementBadgeClass(
+                        req.statusLabel
+                      )}`}
+                    >
+                      {req.statusLabel}
+                    </span>
+                  </div>
                 </div>
                 <p className="text-[11px] text-slate-400">{req.applicabilityRationale}</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1 text-[10px] font-mono text-slate-400 bg-[#111827] border border-slate-800/80 rounded p-2">
+                  <div className="truncate">
+                    Pinned rev: <span className="text-slate-200">{req.pinnedRevision}</span>
+                  </div>
+                  <div className="truncate">
+                    Verifier: <span className="text-slate-200">{req.applicableVerifier}</span>
+                  </div>
+                  <div className="truncate">
+                    Execution ID: <span className="text-slate-200">{req.executionIdentity}</span>
+                  </div>
+                  <div className="truncate">
+                    Evidence: <span className="text-slate-200">{req.evidenceRecord}</span>
+                  </div>
+                </div>
                 {req.gapReason && (
                   <p className="text-[11px] text-amber-200 flex items-start gap-1.5">
                     <ShieldAlert

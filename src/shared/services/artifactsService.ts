@@ -111,6 +111,7 @@ export class ArtifactsService {
       expectedProjectId: params.project.id,
       expectedSourceRevision: params.project.sourceRevision,
       requireManifest: true,
+      isSyntheticFixture: params.artifact.isSyntheticFixture,
     });
 
     const blockingReasons = [...parseResult.errors];
@@ -125,6 +126,7 @@ export class ArtifactsService {
       headerParseResult: parseResult,
       updatedArtifactFields: {
         archiveValidationStatus: parseResult.status,
+        artifactState: passed ? 'PREFLIGHT_CHECKED' : 'FAILED',
         byteLength: parseResult.byteLength,
         sha256Verified:
           passed && expectedSha !== undefined

@@ -37,14 +37,14 @@
 
 ## 3. Reviewed Upstream Sources & Hard Exclusions
 
-- **`UOR-Foundation/PrismPM` (`b8bbabcf27392d65e58fe6e27612bdb785aa2939`, `MIT OR Apache-2.0`, `CANDIDATE`)**: Authoritative closed `.lex.tex` -> Core-Wasm -> `HOLOVIEW\0\x01` -> `.holo` v4 (`HOLO\x04\0`) / v5 (`UORC\x02\x01`) compiler & `PP3001` JSON rejection boundary.
+- **`UOR-Foundation/PrismPM` (`6c876017bffa0e770cffc2225cb2d2422c35a69a`, `MIT OR Apache-2.0`, `CANDIDATE`)**: Authoritative `v0.5.0` closed `.lex.tex` -> Core-Wasm -> `HOLOVIEW\0\x01` -> `.holo` v4 (`HOLO\x04\0`) / v5 (`UORC\x02\x01`) compiler & `PP3001` JSON rejection boundary.
 - **`UOR-Foundation/LexLean` (`71defb4c663aaec5b9a3aab04cbc6a03e7106227`, `MIT OR Apache-2.0`, `CANDIDATE`)**: Controlled semantic language kernel (`leanprover/lean4:v4.32.1`); `fmt`, `check`, and `build` never certify `verify`.
 - **`UOR-Foundation/foundry` (`760eaac29687628c7c66e8d492e126afa194656e`, `MIT OR Apache-2.0`, `REFERENCE ONLY`)**: Kernel invariants (`INV-001`..`INV-004`) invalidating stale evidence on source edits and separating execution from qualification/release.
-- **`Hologram-Technologies/hologram-live` (`cbbf97b5b8199f5865721171e582d8df6ad53166`, `Apache-2.0`, `CANDIDATE`)**: Import-free Core-Wasm (`hologram:guest/core-wasm@1`, `holo_run: (i32, i32) -> i64`) inspect/verify/plan/run CLI contract.
+- **`Hologram-Technologies/hologram-live` (`cbbf97b5b8199f5701c621cd3ba0b26187417ffa`, `MIT OR Apache-2.0`, `CANDIDATE`)**: `v1.0.0` import-free Core-Wasm (`hologram:guest/core-wasm@1`, `holo_run: (i32, i32) -> i64`) `hologram --json inspect/verify/holo plan/run` CLI contract.
 - **`afflom/prism-devrel` (`8af99e96f6bd9f5865721171e582d8df6ad53166`, `MIT OR Apache-2.0`, `CANDIDATE`)**: Guides `GUIDED_PRODUCT` 7-facet drafts and `uor/template-contract/1` requiring explicit human review before PrismPM compilation.
 - **`afflom/UORust` (`5868afe38012d647be00ad948949b1e384b87211`, `MIT OR Apache-2.0`, `CANDIDATE`)**: Guides `EXISTING_RUST` Cargo projection (`model/routes.toml`), typed `UorustError` span refusals, and fail-closed fixed-registry Windmill contracts; arbitrary Cargo execution in-browser is disabled and Cargo builds never equate to Prism verification.
 - **`afflom/rule30` (`e3be477fded263029479127363f7fb6a3597e7d4`, `MIT`, `REFERENCE ONLY`)**: Guides the `Formal Research Project` template frontier register and `{propext, Quot.sound}` constructivity framing; Prize Problem 1 (`problem1`) and `aperiodic-compensation` remain explicitly open.
 - **`afflom/stitch` (`1607d53dfc5a34324f8102123d166d727cc66634`, `MIT`, `REFERENCE ONLY`)**: Contributes full SHA-256 commitments, byte lengths, and `DETERMINISTIC_PURE_STATE_ONLY` checkpoint hashes; P2P transport, public relays, WebRTC ICE, DNS, and BGP features are explicitly excluded.
 
-See [`MAC_STUDIO_QUALIFICATION.md`](./MAC_STUDIO_QUALIFICATION.md) for local toolchain setup, offline lock closure, and Mac Studio qualification workflows.
+See [`MAC_STUDIO_QUALIFICATION.md`](./MAC_STUDIO_QUALIFICATION.md) for local toolchain setup, offline lock closure, and the 8-step Mac Studio qualification procedure.
 

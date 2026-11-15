@@ -56,6 +56,8 @@ function buildValidArtifact(projectId: string): ArtifactProvenanceRecord {
     projectId,
     artifactName: 'test-target.holo',
     artifactFormat: 'lexlean/production-result/1',
+    outputClass: 'physical_holo_archive',
+    artifactState: 'PROPOSED',
     sha256Digest: VALID_DIGEST,
     digestMode: 'DOCUMENTED_REFERENCE_DIGEST',
     sourceRevision: SOURCE_REV,

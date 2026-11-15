@@ -30,7 +30,7 @@ const DEFAULT_PAYLOAD: EngineeringIntakePayload = {
   purpose: '',
   declaredInputs: 'src/Main.lex.tex, prismpm.lock, lexlean.lock, standards.lock',
   environmentDeclaration: 'Sanitized offline workspace (no local secrets or raw logs)',
-  sourceRevision: 'prismpm/demo@b8bbabcf',
+  sourceRevision: 'prismpm/demo@6c876017',
   acknowledgeBoundary: false,
   lockfilesDeclared: ['prismpm.lock', 'lexlean.lock', 'standards.lock'],
 };
@@ -130,7 +130,7 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
         'examples/Calculator/prismpm.toml, examples/Calculator/src/Calculator.lex.tex, examples/Calculator/lexlean.lock',
       environmentDeclaration:
         'Sanitized browser demonstration; target Windmill workspace uor-offline-foundry',
-      sourceRevision: 'prismpm/demo@b8bbabcf',
+      sourceRevision: 'prismpm/demo@6c876017',
       acknowledgeBoundary: true,
       sourceRefs: sampleTpl.sourceRefs,
       templateOriginId: sampleTpl.id,

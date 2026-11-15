@@ -52,6 +52,8 @@ function createArtifact(projectId: string): ArtifactProvenanceRecord {
     projectId,
     artifactName: 'sec-unit-artifact.holo',
     artifactFormat: 'lexlean/production-result/1',
+    outputClass: 'physical_holo_archive',
+    artifactState: 'PROPOSED',
     sha256Digest: ARTIFACT_DIGEST,
     digestMode: 'DOCUMENTED_REFERENCE_DIGEST',
     sourceRevision: SOURCE_REVISION,

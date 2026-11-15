@@ -1,15 +1,16 @@
 {
   "schema": "uor.foundry.windmill-flow-proposal.v1",
+  "generatedBy": "src/shared/adapters/windmillCommandRegistry.ts via scripts/prepare-windmill-app.mjs",
   "epistemicCondition": "PROPOSED",
   "registrationStatus": "PREPARED_NOT_REGISTERED",
   "workspace": "uor-offline-foundry",
   "flowPath": "f/uor_foundry/prism_hologram_delivery",
   "summary": "10-stage fail-closed Prism source-to-Hologram DAG using fixed allowlisted CLI subcommands.",
   "toolchainPins": {
-    "prismpm": "UOR-Foundation/PrismPM@b8bbabcf27392d65e58fe6e27612bdb785aa2939",
+    "prismpm": "UOR-Foundation/PrismPM@6c876017bffa0e770cffc2225cb2d2422c35a69a",
     "lexlean": "UOR-Foundation/LexLean@71defb4c663aaec5b9a3aab04cbc6a03e7106227",
     "foundry": "UOR-Foundation/foundry@760eaac29687628c7c66e8d492e126afa194656e",
-    "hologramLive": "Hologram-Technologies/hologram-live@cbbf97b5b8199f5865721171e582d8df6ad53166",
+    "hologramLive": "Hologram-Technologies/hologram-live@cbbf97b5b8199f5701c621cd3ba0b26187417ffa",
     "uorust": "afflom/UORust@5868afe38012d647be00ad948949b1e384b87211",
     "lean": "leanprover/lean4:v4.32.1"
   },
@@ -20,7 +21,7 @@
       "stageId": "intake",
       "uorGate": "REGISTER",
       "runnable": "backend/intake_validate.ts",
-      "fixedCommandId": null
+      "fixedCommandId": "prism_intake_validate"
     },
     {
       "index": 2,
@@ -28,7 +29,7 @@
       "stageId": "specify",
       "uorGate": "REVIEW",
       "runnable": "backend/prism_stage_dispatch.ts",
-      "fixedCommandId": "lexlean_fmt_check"
+      "fixedCommandId": "prism_specify_validate"
     },
     {
       "index": 3,
@@ -36,7 +37,7 @@
       "stageId": "lock",
       "uorGate": "REVIEW",
       "runnable": "backend/prism_stage_dispatch.ts",
-      "fixedCommandId": "prismpm_lock_check"
+      "fixedCommandId": "prism_lock_check"
     },
     {
       "index": 4,
@@ -70,7 +71,7 @@
       "stageId": "inspect",
       "uorGate": "VERIFY EVIDENCE",
       "runnable": "backend/prism_stage_dispatch.ts",
-      "fixedCommandId": "hologram_inspect_json"
+      "fixedCommandId": "hologram_inspect"
     },
     {
       "index": 8,
@@ -78,7 +79,7 @@
       "stageId": "preview",
       "uorGate": "EXECUTE",
       "runnable": "backend/prism_stage_dispatch.ts",
-      "fixedCommandId": "hologram_run_json"
+      "fixedCommandId": "hologram_run"
     },
     {
       "index": 9,
@@ -86,7 +87,7 @@
       "stageId": "review",
       "uorGate": "QUALIFY",
       "runnable": "backend/workflow_dispatch.ts",
-      "fixedCommandId": "prismpm_qualify"
+      "fixedCommandId": "prism_review_qualify"
     },
     {
       "index": 10,

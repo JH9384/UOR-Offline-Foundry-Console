@@ -123,7 +123,8 @@ test.describe('UOR Offline Foundry Studio Workspace E2E', () => {
     });
     await page.getByRole('button', { name: 'Dismiss error' }).click();
 
-    // 6. Preview element selection -> referenced change request
+    // 6. Preview Artifact Selector + element selection -> referenced change request
+    await expect(page.getByTestId('preview-artifact-selector')).toBeVisible();
     await page.getByRole('button', { name: 'Select Element' }).click();
     await page
       .getByRole('region', { name: 'Live preview panel' })
@@ -165,7 +166,7 @@ test.describe('UOR Offline Foundry Studio Workspace E2E', () => {
     expect(monitors.externalRequests).toEqual([]);
   });
 
-  test('10-14: Build stages, Verify & Release blockers, sanitized air-gapped export vs local backup restore, reload persistence, and offline mode', async ({
+  test('10-14: Build stages & Stage Inspector, Verify & Release blockers, sanitized air-gapped export vs local backup restore, reload persistence, and offline mode', async ({
     page,
     context,
   }) => {
@@ -184,9 +185,12 @@ test.describe('UOR Offline Foundry Studio Workspace E2E', () => {
     await page.getByRole('textbox', { name: 'New checkpoint name' }).fill('Reload Check CP');
     await page.getByRole('button', { name: 'Save Checkpoint' }).click();
 
-    // 10. Build mode workflow stage progression & idempotent local staging
+    // 10. Build mode workflow stage progression, Interactive Stage Inspector & idempotent local staging
     const modesNav = page.getByRole('navigation', { name: 'Workspace modes' });
     await modesNav.getByRole('button', { name: 'Build' }).click();
+    await expect(page.getByTestId('stage-inspector')).toBeVisible();
+    await page.getByTestId('stage-card-verify').click();
+    await expect(page.getByTestId('stage-inspector')).toContainText('Stage Inspector: Verify');
     await expect(page.getByRole('button', { name: 'Step Simulated Stage' })).toBeVisible();
     await page.getByRole('button', { name: 'Step Simulated Stage' }).click();
 
@@ -195,14 +199,15 @@ test.describe('UOR Offline Foundry Studio Workspace E2E', () => {
     await page.getByRole('button', { name: 'Stage Local Intent' }).click();
     await expect(page.getByRole('main').getByText(/Duplicate dispatch prevented/i)).toBeVisible();
 
-    // Check Build -> Artifacts tab direct download gating + Hologram v4 header/manifest parser
+    // Check Build -> Artifacts tab direct download gating + Hologram v4 structural preflight
     await page.getByRole('button', { name: /Artifacts & Provenance/i }).click();
     await expect(page.getByTestId('direct-download-gate')).toBeVisible();
     await expect(page.getByRole('button', { name: /\.holo Archive Binary/i })).toBeDisabled();
     await page.getByRole('button', { name: /Test `PP3001` JSON Rejection/i }).click();
     await expect(page.getByTestId('holo-inspection-result')).toContainText('REJECTED_JSON_AS_HOLO_PP3001');
-    await page.getByRole('button', { name: /Test Valid `HOLO\\x04\\0` Bytes/i }).click();
-    await expect(page.getByTestId('holo-inspection-result')).toContainText('VALID_HOLO_V4');
+    await page.getByRole('button', { name: /Run Structural Preflight \(Synthetic/i }).click();
+    await expect(page.getByTestId('holo-inspection-result')).toContainText('STRUCTURAL PREFLIGHT PASS');
+    await expect(page.getByTestId('holo-trust-layers')).toContainText('NOT_RUN_IN_BROWSER');
     await expect(page.getByTestId('holo-manifest-summary')).toContainText('prismpm/holo-v4-manifest/1');
     await page.getByRole('button', { name: /Test Corrupt Manifest Rejection/i }).click();
     await expect(page.getByTestId('holo-inspection-result')).toContainText('INVALID_MANIFEST');
@@ -211,6 +216,7 @@ test.describe('UOR Offline Foundry Studio Workspace E2E', () => {
     await modesNav.getByRole('button', { name: 'Verify & Release' }).click();
     await expect(page.getByText('RELEASE BLOCKED').first()).toBeVisible();
     await expect(page.getByText('NOT VERIFIED').first()).toBeVisible();
+    await expect(page.getByTestId('verify-release-blockers')).toBeVisible();
     await page.getByRole('button', { name: /Source Review & Compliance/i }).click();
     await expect(page.getByTestId('source-compliance-panel')).toBeVisible();
     await expect(page.getByText('UOR Source Review & Compliance Register')).toBeVisible();

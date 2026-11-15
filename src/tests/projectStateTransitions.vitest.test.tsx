@@ -154,10 +154,10 @@ describe('UOR Project Templates, State Transitions & Studio Components (Vitest +
     expect(screen.getAllByText(/8af99e96f6bd9f5865721171e582d8df6ad53166/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/1607d53dfc5a34324f8102123d166d727cc66634/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/e3be477fded263029479127363f7fb6a3597e7d4/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/b8bbabcf27392d65e58fe6e27612bdb785aa2939/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/6c876017bffa0e770cffc2225cb2d2422c35a69a/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/71defb4c663aaec5b9a3aab04cbc6a03e7106227/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/760eaac29687628c7c66e8d492e126afa194656e/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/cbbf97b5b8199f5865721171e582d8df6ad53166/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/cbbf97b5b8199f5701c621cd3ba0b26187417ffa/).length).toBeGreaterThan(0);
 
     // Fail-closed UORust Windmill contract card rendered
     expect(screen.getByTestId('uorust-windmill-contract')).toBeTruthy();

@@ -12,6 +12,7 @@ import {
 import {
   ApprovalDisposition,
   ArtifactLifecycleBadge,
+  ArtifactLifecycleState,
   ArtifactPreviewStatus,
   ConnectionStatus,
   DraftProposalStatus,
@@ -32,6 +33,7 @@ type StatusValue =
   | ProjectLifecycleStatus
   | ApprovalDisposition
   | ArtifactLifecycleBadge
+  | ArtifactLifecycleState
   | HoloArchiveValidationStatus
   | IntegrationMode
   | ArtifactPreviewStatus
@@ -41,7 +43,11 @@ type StatusValue =
   | 'STALE'
   | 'QUEUED'
   | 'SIMULATED'
-  | 'BLOCKED';
+  | 'BLOCKED'
+  | 'SATISFIED'
+  | 'GAP'
+  | 'UNTESTED'
+  | 'REFUTED';
 
 interface StatusTagProps {
   value: StatusValue;
@@ -64,13 +70,18 @@ export const StatusTag: React.FC<StatusTagProps> = ({ value, className = '' }) =
     case 'APPROVED':
     case 'LOCAL':
     case 'ONLINE':
-    case 'VALID_HOLO_V4':
-    case 'VALID_HOLO_V5_UORC':
+    case 'SATISFIED':
       colorClasses =
         value === 'DOCUMENTED' || value === 'LOCAL'
           ? 'border-sky-500/30 bg-sky-950/40 text-sky-300'
           : 'border-emerald-500/35 bg-emerald-950/40 text-emerald-300';
       Icon = CheckCircle2;
+      break;
+    case 'STRUCTURAL PREFLIGHT PASS':
+    case 'PREFLIGHT_CHECKED':
+    case 'CANDIDATE':
+      colorClasses = 'border-sky-500/35 bg-sky-950/45 text-sky-300';
+      Icon = Clock;
       break;
     case 'FAIL':
     case 'FAILED':
@@ -78,13 +89,12 @@ export const StatusTag: React.FC<StatusTagProps> = ({ value, className = '' }) =
     case 'CANCELLED':
     case 'REJECTED_JSON_AS_HOLO_PP3001':
     case 'INVALID_MAGIC_OR_FOOTER':
+    case 'UNSUPPORTED_ARCHIVE_VERSION':
+    case 'INVALID_MANIFEST':
+    case 'REFUTED':
     case 'STALE':
       colorClasses = 'border-rose-500/40 bg-rose-950/45 text-rose-300';
       Icon = XCircle;
-      break;
-    case 'CANDIDATE':
-      colorClasses = 'border-sky-500/30 bg-sky-950/40 text-sky-300';
-      Icon = Clock;
       break;
     case 'NOT VERIFIED':
     case 'UNVERIFIED':
@@ -94,6 +104,8 @@ export const StatusTag: React.FC<StatusTagProps> = ({ value, className = '' }) =
     case 'Pending':
     case 'INTERRUPTED':
     case 'PENDING_REVIEW':
+    case 'GAP':
+    case 'UNTESTED':
       colorClasses = 'border-amber-500/35 bg-amber-950/35 text-amber-300';
       Icon =
         value === 'BLOCKED' || value === 'RELEASE BLOCKED'
@@ -104,6 +116,7 @@ export const StatusTag: React.FC<StatusTagProps> = ({ value, className = '' }) =
       break;
     case 'Superseded':
     case 'BUILT':
+    case 'GENERATED':
       colorClasses = 'border-violet-500/35 bg-violet-950/35 text-violet-300';
       Icon = History;
       break;

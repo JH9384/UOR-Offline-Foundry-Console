@@ -1,13 +1,15 @@
 import {
+  ArtifactLifecycleState,
   HoloArchiveValidationStatus,
+  HoloVerificationTrustLayers,
   LockfilePinCheck,
   OfflineLockClosureReport,
 } from '../types/foundry';
 
 /**
  * Physical binary format constants verified from:
- * - UOR-Foundation/PrismPM @ b8bbabcf (crates/prismpm/src/holo/archive.rs, v5.rs)
- * - Hologram-Technologies/hologram-live @ cbbf97b5
+ * - UOR-Foundation/PrismPM @ 6c876017bffa0e770cffc2225cb2d2422c35a69a (crates/prismpm/src/holo/archive.rs, v5.rs)
+ * - Hologram-Technologies/hologram-live @ cbbf97b5b8199f5701c621cd3ba0b26187417ffa (src/holo_format.rs)
  */
 export const HOLO_V4_MAGIC = new Uint8Array([0x48, 0x4f, 0x4c, 0x4f, 0x04, 0x00]); // b"HOLO\x04\0"
 export const HOLO_V5_UORC_MAGIC = new Uint8Array([0x55, 0x4f, 0x52, 0x43, 0x02, 0x01]); // b"UORC\x02\x01"
@@ -40,7 +42,31 @@ export interface HoloInspectionReport {
   hasCoreWasmMagic: boolean;
   hasHoloviewMagic: boolean;
   footerPresent: boolean;
+  isSyntheticFixture: boolean;
+  trustLayers: HoloVerificationTrustLayers;
   diagnostic: string;
+}
+
+export function buildHoloTrustLayers(params: {
+  structuralPass: boolean;
+  formatParsePass: boolean;
+  sha256MatchedExpected?: boolean;
+  isSyntheticFixture: boolean;
+}): HoloVerificationTrustLayers {
+  return {
+    structuralPreflight: params.structuralPass ? 'PASS' : 'FAIL',
+    contentDigestValidation:
+      params.sha256MatchedExpected === false
+        ? 'FAIL'
+        : params.sha256MatchedExpected === true
+          ? 'PASS'
+          : 'UNVERIFIED_DIGEST',
+    archiveFormatParsing: params.formatParsePass ? 'PASS' : 'FAIL',
+    independentHologramVerification: 'NOT_RUN_IN_BROWSER',
+    prismPmAcceptance: 'INCOMPLETE_UPSTREAM',
+    productionReleaseAuthorization: 'BLOCKED',
+    isSyntheticFixture: params.isSyntheticFixture,
+  };
 }
 
 function startsWithBytes(bytes: Uint8Array, prefix: Uint8Array): boolean {
@@ -100,8 +126,10 @@ export async function computeSha256Hex(bytes: Uint8Array): Promise<string> {
  */
 export async function inspectHoloArchiveBytes(
   bytes: Uint8Array,
-  expectedSha256?: string
+  expectedSha256?: string,
+  options?: { isSyntheticFixture?: boolean }
 ): Promise<HoloInspectionReport> {
+  const isSyntheticFixture = options?.isSyntheticFixture ?? false;
   const sha256Hex = await computeSha256Hex(bytes);
   const sha256MatchedExpected =
     expectedSha256 !== undefined ? sha256Hex === expectedSha256.toLowerCase() : undefined;
@@ -123,6 +151,13 @@ export async function inspectHoloArchiveBytes(
       hasCoreWasmMagic: false,
       hasHoloviewMagic: false,
       footerPresent: false,
+      isSyntheticFixture,
+      trustLayers: buildHoloTrustLayers({
+        structuralPass: false,
+        formatParsePass: false,
+        sha256MatchedExpected,
+        isSyntheticFixture,
+      }),
       diagnostic: 'PP3001: Empty archive payload is not a valid .holo container.',
     };
   }
@@ -142,6 +177,13 @@ export async function inspectHoloArchiveBytes(
       hasCoreWasmMagic: false,
       hasHoloviewMagic: false,
       footerPresent: false,
+      isSyntheticFixture,
+      trustLayers: buildHoloTrustLayers({
+        structuralPass: false,
+        formatParsePass: false,
+        sha256MatchedExpected,
+        isSyntheticFixture,
+      }),
       diagnostic:
         'PP3001: Refused JSON text renamed as .holo. Physical binary HOLO\\x04\\0 or UORC\\x02\\x01 archive is required.',
     };
@@ -150,10 +192,44 @@ export async function inspectHoloArchiveBytes(
   const hasCoreWasmMagic = containsSubsequence(bytes, WASM_BINARY_MAGIC);
   const hasHoloviewMagic = containsSubsequence(bytes, HOLOVIEW_MAGIC);
 
-  // Check physical v4 header: HOLO\x04\0 (6 bytes) + body + 32-byte blake3 footer
+  // Explicitly detect unsupported HOLO major/minor versions (e.g. HOLO\x03\x00 or HOLO\x05\x00)
+  if (
+    bytes.length >= 6 &&
+    bytes[0] === 0x48 &&
+    bytes[1] === 0x4f &&
+    bytes[2] === 0x4c &&
+    bytes[3] === 0x4f &&
+    (bytes[4] !== 0x04 || bytes[5] !== 0x00)
+  ) {
+    return {
+      valid: false,
+      status: 'UNSUPPORTED_ARCHIVE_VERSION',
+      errorCode: 'PP3001',
+      archiveVersion: 'invalid',
+      byteLength: bytes.length,
+      sha256Hex,
+      sha256MatchedExpected,
+      headerMagicHex,
+      modeledSectionsMin: 0,
+      hasCoreWasmMagic,
+      hasHoloviewMagic,
+      footerPresent: false,
+      isSyntheticFixture,
+      trustLayers: buildHoloTrustLayers({
+        structuralPass: false,
+        formatParsePass: false,
+        sha256MatchedExpected,
+        isSyntheticFixture,
+      }),
+      diagnostic: `PP3001: Unsupported HOLO archive version v${bytes[4]}.${bytes[5]} (${headerMagicHex}). Only physical HOLO\\x04\\0 or UORC\\x02\\x01 is accepted.`,
+    };
+  }
+
+  // Check physical v4 header: HOLO\x04\0 (6 bytes) + body + non-zero 32-byte blake3 footer
   if (startsWithBytes(bytes, HOLO_V4_MAGIC)) {
-    const footerPresent = bytes.length >= 6 + 32 + 16;
-    if (!footerPresent) {
+    const hasMinLength = bytes.length >= 6 + 32 + 16;
+    const footerNonZero = hasMinLength && bytes.slice(bytes.length - 32).some((b) => b !== 0);
+    if (!hasMinLength || !footerNonZero) {
       return {
         valid: false,
         status: 'INVALID_MAGIC_OR_FOOTER',
@@ -167,15 +243,23 @@ export async function inspectHoloArchiveBytes(
         hasCoreWasmMagic,
         hasHoloviewMagic,
         footerPresent: false,
-        diagnostic:
-          'PP3001: Truncated HOLO\\x04\\0 v4 archive missing minimum modeled section table and 32-byte footer.',
+        isSyntheticFixture,
+        trustLayers: buildHoloTrustLayers({
+          structuralPass: false,
+          formatParsePass: false,
+          sha256MatchedExpected,
+          isSyntheticFixture,
+        }),
+        diagnostic: !hasMinLength
+          ? 'PP3001: Truncated HOLO\\x04\\0 v4 archive missing minimum modeled section table and 32-byte footer.'
+          : 'PP3001: HOLO\\x04\\0 archive has all-zero/forged 32-byte footer seal.',
       };
     }
 
     const digestMismatch = sha256MatchedExpected === false;
     return {
       valid: !digestMismatch,
-      status: digestMismatch ? 'INVALID_MAGIC_OR_FOOTER' : 'VALID_HOLO_V4',
+      status: digestMismatch ? 'INVALID_MAGIC_OR_FOOTER' : 'STRUCTURAL PREFLIGHT PASS',
       errorCode: digestMismatch ? 'PP5401' : undefined,
       archiveVersion: 'v4-holo',
       byteLength: bytes.length,
@@ -186,16 +270,24 @@ export async function inspectHoloArchiveBytes(
       hasCoreWasmMagic,
       hasHoloviewMagic,
       footerPresent: true,
+      isSyntheticFixture,
+      trustLayers: buildHoloTrustLayers({
+        structuralPass: !digestMismatch,
+        formatParsePass: true,
+        sha256MatchedExpected,
+        isSyntheticFixture,
+      }),
       diagnostic: digestMismatch
         ? `PP5401: HOLO v4 SHA-256 (${sha256Hex}) does not match expected manifest digest (${expectedSha256}).`
-        : 'Validated physical HOLO\\x04\\0 v4 container magic header and footer boundary.',
+        : `${isSyntheticFixture ? '[SYNTHETIC FIXTURE] ' : ''}Structural preflight passed HOLO\\x04\\0 header and 32-byte non-zero footer check. Independent Hologram Live CLI verify not yet run.`,
     };
   }
 
   // Check Prism v5 UORC archive header: "UORC" 02 01 00 00 uleb(count) ... seal[32]
   if (startsWithBytes(bytes, HOLO_V5_UORC_MAGIC) && bytes.length >= 8 + 32 + 1) {
     const countDec = readUleb128(bytes, 8);
-    if (!countDec || countDec.value < 7) {
+    const sealNonZero = bytes.slice(bytes.length - 32).some((b) => b !== 0);
+    if (!countDec || countDec.value < 7 || !sealNonZero) {
       return {
         valid: false,
         status: 'INVALID_MAGIC_OR_FOOTER',
@@ -209,13 +301,22 @@ export async function inspectHoloArchiveBytes(
         hasCoreWasmMagic,
         hasHoloviewMagic,
         footerPresent: false,
-        diagnostic: 'PP3001: UORC v5 archive requires all 7 ROLES_V5 ordered objects.',
+        isSyntheticFixture,
+        trustLayers: buildHoloTrustLayers({
+          structuralPass: false,
+          formatParsePass: false,
+          sha256MatchedExpected,
+          isSyntheticFixture,
+        }),
+        diagnostic: !sealNonZero
+          ? 'PP3001: UORC v5 archive has all-zero/forged 32-byte trailer seal.'
+          : 'PP3001: UORC v5 archive requires all 7 ROLES_V5 ordered objects.',
       };
     }
     const digestMismatch = sha256MatchedExpected === false;
     return {
       valid: !digestMismatch,
-      status: digestMismatch ? 'INVALID_MAGIC_OR_FOOTER' : 'VALID_HOLO_V5_UORC',
+      status: digestMismatch ? 'INVALID_MAGIC_OR_FOOTER' : 'STRUCTURAL PREFLIGHT PASS',
       errorCode: digestMismatch ? 'PP5401' : undefined,
       archiveVersion: 'v5-uorc',
       byteLength: bytes.length,
@@ -226,9 +327,16 @@ export async function inspectHoloArchiveBytes(
       hasCoreWasmMagic,
       hasHoloviewMagic,
       footerPresent: true,
+      isSyntheticFixture,
+      trustLayers: buildHoloTrustLayers({
+        structuralPass: !digestMismatch,
+        formatParsePass: true,
+        sha256MatchedExpected,
+        isSyntheticFixture,
+      }),
       diagnostic: digestMismatch
         ? `PP5401: UORC v5 SHA-256 (${sha256Hex}) does not match expected manifest digest.`
-        : `Validated UORC v5 archive (${countDec.value} ordered objects) and 32-byte seal.`,
+        : `${isSyntheticFixture ? '[SYNTHETIC FIXTURE] ' : ''}Structural preflight passed UORC v5 (${countDec.value} ordered objects) and 32-byte non-zero seal. Independent Hologram Live CLI verify not yet run.`,
     };
   }
 
@@ -245,6 +353,13 @@ export async function inspectHoloArchiveBytes(
     hasCoreWasmMagic,
     hasHoloviewMagic,
     footerPresent: false,
+    isSyntheticFixture,
+    trustLayers: buildHoloTrustLayers({
+      structuralPass: false,
+      formatParsePass: false,
+      sha256MatchedExpected,
+      isSyntheticFixture,
+    }),
     diagnostic: `PP3001: Unrecognized header magic (${headerMagicHex}). Expected HOLO\\x04\\0 or UORC\\x02\\x01.`,
   };
 }
@@ -325,9 +440,10 @@ export function buildSyntheticHoloV4TestFixtureBytes(bodyTag = 'calculator-v4'):
   const manifestBytes = new TextEncoder().encode(
     JSON.stringify({
       schema: 'prismpm/holo-v4-manifest/1',
+      fixtureOrigin: 'SYNTHETIC_TEST_FIXTURE',
       projectId: 'proj-prism-calc',
-      projectName: `PrismPM Fixture (${bodyTag})`,
-      sourceRevision: 'prismpm/main@b8bbabcf',
+      projectName: `PrismPM Synthetic Fixture (${bodyTag})`,
+      sourceRevision: 'prismpm/main@6c876017',
       entrypoint: 'holo_run',
       coreWasmContract: 'hologram:guest/core-wasm@1',
       viewProfile: 'prism.browser-view/1',
@@ -373,19 +489,27 @@ export function buildSyntheticHoloV4TestFixtureBytes(bodyTag = 'calculator-v4'):
 }
 
 /**
- * Direct binary/source/runtime/evidence downloads are strictly gated on actual
- * on-disk artifact presence AND verified SHA-256 checksum matching.
+ * Direct binary/source/runtime/evidence downloads are strictly gated on:
+ * 1) actual on-disk artifact presence,
+ * 2) verified SHA-256 checksum matching, AND
+ * 3) artifact lifecycle state === 'VERIFIED'.
  */
 export function canDownloadVerifiedArtifact(artifact?: {
   fileExistsOnDisk?: boolean;
   sha256Verified?: boolean;
+  artifactState?: ArtifactLifecycleState;
 }): boolean {
-  return Boolean(artifact?.fileExistsOnDisk && artifact?.sha256Verified);
+  return Boolean(
+    artifact?.fileExistsOnDisk &&
+      artifact?.sha256Verified &&
+      artifact?.artifactState === 'VERIFIED'
+  );
 }
 
 export function getDirectDownloadBlockReason(artifact?: {
   fileExistsOnDisk?: boolean;
   sha256Verified?: boolean;
+  artifactState?: ArtifactLifecycleState;
 }): string | null {
   if (!artifact) return 'No artifact selected.';
   if (!artifact.fileExistsOnDisk) {
@@ -393,6 +517,9 @@ export function getDirectDownloadBlockReason(artifact?: {
   }
   if (!artifact.sha256Verified) {
     return 'Direct download disabled (PP5401): file digest has not been independently verified on disk.';
+  }
+  if (artifact.artifactState !== 'VERIFIED') {
+    return `Direct download disabled: artifact lifecycle state is "${artifact.artifactState ?? 'UNKNOWN'}" (must reach independent VERIFIED state).`;
   }
   return null;
 }

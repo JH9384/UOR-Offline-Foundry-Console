@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   CheckCircle2,
   Clock,
@@ -8,10 +8,15 @@ import {
   RefreshCw,
   ShieldAlert,
   SkipForward,
+  Terminal,
 } from 'lucide-react';
 import {
+  CANONICAL_COMMAND_BY_ID,
+  CANONICAL_WORKFLOW_STAGES,
+  CanonicalCommandId,
   FIXED_WINDMILL_COMMAND_REGISTRY,
 } from '../../adapters/windmillCommandRegistry';
+import { WORKFLOW_CATALOG } from '../../data/seedFoundryData';
 import { evaluateProjectOfflineClosure } from '../../services/holoArchiveValidator';
 import {
   ArtifactProvenanceRecord,
@@ -21,6 +26,7 @@ import {
   ProjectRecord,
   WindmillJobRecord,
   WorkflowRun,
+  WorkflowStageId,
 } from '../../types/foundry';
 import { StatusTag } from '../StatusTag';
 import { ArtifactsView } from '../views/ArtifactsView';
@@ -66,6 +72,29 @@ export const BuildModePanel: React.FC<BuildModePanelProps> = ({
   const activeRun = runs.find((r) => r.projectId === project.id);
   const projectArtifacts = artifacts.filter((a) => a.projectId === project.id);
   const projectJobs = jobRecords.filter((j) => j.projectId === project.id);
+
+  const [selectedStageId, setSelectedStageId] = useState<WorkflowStageId>(
+    () => activeRun?.currentStageId ?? 'intake'
+  );
+
+  useEffect(() => {
+    setSelectedStageId(activeRun?.currentStageId ?? 'intake');
+  }, [project.id, activeRun?.id, activeRun?.currentStageId]);
+
+  const workflowDef = WORKFLOW_CATALOG.find((w) => w.id === activeRun?.workflowId);
+  const selectedStage =
+    activeRun?.stages.find((s) => s.stageId === selectedStageId) ?? activeRun?.stages[0];
+  const selectedTemplate = workflowDef?.stages.find(
+    (s) => s.id === selectedStage?.stageId
+  );
+  const canonicalSpec = CANONICAL_WORKFLOW_STAGES.find(
+    (c) => c.stageId === selectedStage?.stageId
+  );
+  const effectiveCommandId = (selectedStage?.fixedCommandId ??
+    canonicalSpec?.fixedCommandId) as CanonicalCommandId | undefined;
+  const registryEntry = effectiveCommandId
+    ? CANONICAL_COMMAND_BY_ID[effectiveCommandId]
+    : undefined;
 
   const canStep =
     activeRun &&
@@ -208,43 +237,177 @@ export const BuildModePanel: React.FC<BuildModePanelProps> = ({
           ) : (
             <>
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
-                {activeRun.stages.map((stage, idx) => (
-                  <div
-                    key={stage.stageId}
-                    className={`p-3.5 rounded-md border flex flex-col justify-between gap-2.5 ${
-                      stage.status === 'RUNNING'
-                        ? 'bg-blue-950/20 border-blue-500/40'
-                        : stage.status === 'BLOCKED'
-                          ? 'bg-amber-950/15 border-amber-500/35'
-                          : 'bg-[#0B0F17] border-slate-800'
-                    }`}
-                  >
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="font-mono text-xs text-slate-300 tabular-nums">
-                          {String(idx + 1).padStart(2, '0')}. {stage.label}
+                {activeRun.stages.map((stage, idx) => {
+                  const isSelected = selectedStage?.stageId === stage.stageId;
+                  return (
+                    <button
+                      type="button"
+                      key={stage.stageId}
+                      data-testid={`stage-card-${stage.stageId}`}
+                      aria-pressed={isSelected}
+                      onClick={() => setSelectedStageId(stage.stageId)}
+                      className={`text-left p-3.5 rounded-md border flex flex-col justify-between gap-2.5 transition-colors ${
+                        isSelected
+                          ? 'ring-2 ring-blue-500 border-blue-500/70 bg-blue-950/25'
+                          : stage.status === 'RUNNING'
+                            ? 'bg-blue-950/20 border-blue-500/40 hover:border-blue-400/60'
+                            : stage.status === 'BLOCKED'
+                              ? 'bg-amber-950/15 border-amber-500/35 hover:border-amber-400/50'
+                              : 'bg-[#0B0F17] border-slate-800 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="space-y-1.5 w-full">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-mono text-xs text-slate-300 tabular-nums">
+                            {String(idx + 1).padStart(2, '0')}. {stage.label}
+                          </span>
+                          <StatusTag value={stage.status} />
+                        </div>
+                        <div className="text-[11px] font-mono text-slate-500">
+                          {stage.stageContractName ?? stage.stageId.toUpperCase()} · {stage.uorGate}
+                        </div>
+                        <p className="text-xs text-slate-300 leading-relaxed line-clamp-3">
+                          {stage.summary}
+                        </p>
+                        {stage.executionId && (
+                          <div className="text-[10px] font-mono text-slate-500 truncate">
+                            exec:{stage.executionId}
+                          </div>
+                        )}
+                      </div>
+                      <div className="pt-2 border-t border-slate-800/80 space-y-1 text-[10px] font-mono text-slate-500 w-full">
+                        <div className="truncate">
+                          {stage.fixedCommandId ?? stage.commandOrContract ?? stage.executedBy}
+                        </div>
+                        {stage.toolchainIdentity && (
+                          <div className="truncate text-slate-400">{stage.toolchainIdentity}</div>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Interactive Stage Inspector */}
+              {selectedStage && (
+                <div
+                  data-testid="stage-inspector"
+                  className="bg-[#0B0F17] border border-slate-800 rounded-lg p-4 space-y-4"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-800">
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Terminal className="w-4 h-4 text-sky-400" aria-hidden="true" />
+                        <h3 className="text-xs font-semibold text-slate-100">
+                          Stage Inspector: {selectedStage.label} (
+                          {selectedStage.stageContractName ?? selectedStage.stageId.toUpperCase()})
+                        </h3>
+                        <StatusTag value={selectedStage.status} />
+                        <span className="px-2 py-0.5 text-[10px] font-mono rounded border border-indigo-500/35 bg-indigo-950/30 text-indigo-200">
+                          {integrationMode === 'DEMO'
+                            ? 'DEMO · Simulated Browser Fixture Only'
+                            : 'LOCAL · uor-offline-foundry Locked'}
                         </span>
-                        <StatusTag value={stage.status} />
                       </div>
-                      <div className="text-[11px] font-mono text-slate-500">
-                        {stage.stageContractName ?? stage.stageId.toUpperCase()} · {stage.uorGate}
+                      <p className="text-[11px] text-slate-400">
+                        Gate: <span className="font-mono text-slate-200">{selectedStage.uorGate}</span>{' '}
+                        · Establishes Verification:{' '}
+                        <span className="font-mono text-slate-200">
+                          {registryEntry?.establishesVerification ? 'YES (on Mac Studio worker)' : 'NO'}
+                        </span>
+                      </p>
+                    </div>
+                    <div className="text-[11px] font-mono text-slate-400">
+                      commandId: <span className="text-sky-300">{effectiveCommandId ?? 'UNBOUND'}</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 text-xs">
+                    <div className="p-3 bg-[#111827] border border-slate-800 rounded space-y-1.5">
+                      <div className="text-[11px] font-medium text-slate-400">
+                        Canonical Windmill Contract &amp; Validated CLI Arguments
                       </div>
-                      <p className="text-xs text-slate-300 leading-relaxed">{stage.summary}</p>
-                      {stage.executionId && (
-                        <div className="text-[10px] font-mono text-slate-500 truncate">
-                          exec:{stage.executionId}
+                      <div className="font-mono text-[11px] text-slate-200 break-all">
+                        Flow/Runnable:{' '}
+                        {registryEntry
+                          ? `${registryEntry.windmillFlowPath} -> ${registryEntry.windmillRunnable}`
+                          : canonicalSpec?.runnable ?? selectedStage.executedBy}
+                      </div>
+                      <div className="p-2 bg-[#090D14] border border-slate-800 rounded font-mono text-[11px] text-emerald-300 overflow-x-auto">
+                        {selectedStage.validatedArgs?.length
+                          ? selectedStage.validatedArgs.join(' ')
+                          : registryEntry
+                            ? `${registryEntry.executable} ${registryEntry.fixedArgs.join(' ')}`
+                            : selectedStage.commandOrContract ?? 'No CLI arguments recorded'}
+                      </div>
+                      <div className="text-[11px] text-slate-400">
+                        Toolchain: <span className="font-mono text-slate-300">{selectedStage.toolchainIdentity ?? 'Pinned Mac Studio toolchain'}</span>
+                      </div>
+                    </div>
+
+                    <div className="p-3 bg-[#111827] border border-slate-800 rounded space-y-1.5">
+                      <div className="text-[11px] font-medium text-slate-400">
+                        Inputs, Output Expectations &amp; Fail-Closed Rules
+                      </div>
+                      <div className="text-[11px] text-slate-300">
+                        Inputs:{' '}
+                        <span className="font-mono text-slate-200">
+                          {selectedStage.inputSourceIdentity ?? project.declaredInputs}
+                        </span>{' '}
+                        ({selectedStage.sourceRevision ?? project.sourceRevision})
+                      </div>
+                      <div className="text-[11px] text-amber-200/90">
+                        Fail-Closed Rule:{' '}
+                        {selectedTemplate?.failClosedRule ??
+                          canonicalSpec?.note ??
+                          'Must complete with authenticated digest match before release.'}
+                      </div>
+                      {selectedStage.failuresOrBlockingRules &&
+                        selectedStage.failuresOrBlockingRules.length > 0 && (
+                          <div className="text-[11px] text-rose-300 font-mono">
+                            Active Blockers: {selectedStage.failuresOrBlockingRules.join('; ')}
+                          </div>
+                        )}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 text-xs">
+                    <div className="p-3 bg-[#111827] border border-slate-800 rounded space-y-1.5">
+                      <div className="text-[11px] font-medium text-slate-400">
+                        Produced / Expected Stage Artifacts
+                      </div>
+                      {selectedStage.producedArtifacts && selectedStage.producedArtifacts.length > 0 ? (
+                        <ul className="space-y-1 font-mono text-[11px]">
+                          {selectedStage.producedArtifacts.map((ref) => (
+                            <li key={ref.path} className="text-slate-200 break-all">
+                              [{ref.outputClass}] {ref.path} · onDisk={String(ref.verifiedOnDisk)} ·{' '}
+                              {ref.sha256Digest.slice(0, 14)}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <div className="text-[11px] text-slate-500">
+                          No verified on-disk artifact outputs recorded for this simulated stage yet.
                         </div>
                       )}
                     </div>
-                    <div className="pt-2 border-t border-slate-800/80 space-y-1 text-[10px] font-mono text-slate-500">
-                      <div className="truncate">{stage.commandOrContract ?? stage.executedBy}</div>
-                      {stage.toolchainIdentity && (
-                        <div className="truncate text-slate-400">{stage.toolchainIdentity}</div>
+
+                    <div className="p-3 bg-[#111827] border border-slate-800 rounded space-y-1.5">
+                      <div className="text-[11px] font-medium text-slate-400">
+                        Actual Result &amp; Diagnostic
+                      </div>
+                      <div className="text-[11px] text-slate-200 leading-relaxed">
+                        {selectedStage.resultOrDiagnostic ?? selectedStage.summary}
+                      </div>
+                      {selectedStage.evidenceRef && (
+                        <div className="text-[10px] font-mono text-slate-400">
+                          Evidence Ref: {selectedStage.evidenceRef}
+                        </div>
                       )}
                     </div>
                   </div>
-                ))}
-              </div>
+                </div>
+              )}
 
               {/* Offline Lockfile Closure + Fixed Windmill Command Registry */}
               {(() => {

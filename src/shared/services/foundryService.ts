@@ -100,7 +100,7 @@ export const PROJECT_TEMPLATES: ProjectTemplateSpec[] = [
       },
       {
         sourceId: 'prismpm',
-        commitSha: 'b8bbabcf27392d65e58fe6e27612bdb785aa2939',
+        commitSha: '6c876017bffa0e770cffc2225cb2d2422c35a69a',
         role: 'Target SDK packager & .holo v4 binary compiler',
       },
       {
@@ -445,13 +445,15 @@ export class FoundryService {
             : 'Synthetic Hologram v4 / model.prism.json',
       outputClass:
         component.id === 'lexlean-compiler'
-          ? 'generated_lean_attestation'
+          ? 'generated_lean_proof_evidence'
           : component.id === 'uorust-translator'
             ? 'model_prism_json'
-            : 'binary_holo_archive',
+            : 'physical_holo_archive',
+      artifactState: 'PROPOSED',
       sha256Digest: digest,
       digestMode: 'SYNTHETIC_DEMO_DIGEST',
       provenanceStatus: 'Pending',
+      isSyntheticFixture: true,
       sourceRevision: project.sourceRevision,
       inputDependencies: project.declaredInputs.split(',').map((s) => s.trim()).filter(Boolean),
       toolchainIdentity: `${component.name} (Simulated Console Preview)`,

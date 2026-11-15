@@ -1,5 +1,9 @@
-import { HoloArchiveValidationStatus } from '../types/foundry';
 import {
+  HoloArchiveValidationStatus,
+  HoloVerificationTrustLayers,
+} from '../types/foundry';
+import {
+  buildHoloTrustLayers,
   computeSha256Hex,
   HOLO_V4_MAGIC,
   HOLOVIEW_MAGIC,
@@ -44,6 +48,7 @@ export interface HoloV4ManifestContent {
   entrypoint: string;
   coreWasmContract?: string;
   viewProfile?: string;
+  fixtureOrigin?: string;
   sections: string[];
   createdAt?: string;
 }
@@ -77,6 +82,7 @@ export interface HologramV4ParseOptions {
   expectedProjectId?: string;
   expectedSourceRevision?: string;
   requireManifest?: boolean;
+  isSyntheticFixture?: boolean;
 }
 
 export interface HologramV4ParsedArtifact {
@@ -95,6 +101,8 @@ export interface HologramV4ParsedArtifact {
   manifest?: HoloV4ManifestContent;
   hasCoreWasmMagic: boolean;
   hasHoloviewMagic: boolean;
+  isSyntheticFixture: boolean;
+  trustLayers: HoloVerificationTrustLayers;
   errors: string[];
   diagnostic: string;
 }
@@ -171,6 +179,11 @@ function validateHoloV4ManifestObject(raw: unknown): {
     obj.sections.some((s) => !isNonEmptyString(s))
   ) {
     errors.push('Manifest "sections" must be a non-empty array of section identifier strings.');
+  } else {
+    const trimmed = (obj.sections as string[]).map((s) => s.trim());
+    if (new Set(trimmed).size !== trimmed.length) {
+      errors.push('Manifest "sections" contains duplicate section identifiers.');
+    }
   }
   if (
     obj.createdAt !== undefined &&
@@ -195,6 +208,7 @@ function validateHoloV4ManifestObject(raw: unknown): {
         ? obj.coreWasmContract.trim()
         : undefined,
       viewProfile: isNonEmptyString(obj.viewProfile) ? obj.viewProfile.trim() : undefined,
+      fixtureOrigin: isNonEmptyString(obj.fixtureOrigin) ? obj.fixtureOrigin.trim() : undefined,
       sections: (obj.sections as string[]).map((s) => s.trim()),
       createdAt: isNonEmptyString(obj.createdAt) ? obj.createdAt.trim() : undefined,
     },
@@ -210,9 +224,11 @@ export async function computeArrayBufferSha256(buffer: ArrayBuffer): Promise<str
 }
 
 /**
- * Parses a Hologram v4 binary `.holo` ArrayBuffer, validates the `HOLO\x04\0` magic bytes,
- * section table bounds, 32-byte non-zero trailer seal, and embedded `"MFST"` JSON manifest,
- * and returns a typed object containing the artifact metadata and SHA-256 integrity hash.
+ * Performs structural preflight parsing on a Hologram v4 binary `.holo` ArrayBuffer:
+ * - Validates `HOLO\x04\0` magic bytes (and explicitly detects unsupported versions like `HOLO\x03\0`)
+ * - Validates section table bounds and non-overlapping payload offsets
+ * - Validates 32-byte non-zero trailer seal and embedded `"MFST"` JSON manifest
+ * - Computes SHA-256 digest and explicitly separates browser preflight from independent Hologram Live verify
  */
 export async function parseHologramV4Header(
   buffer: ArrayBuffer,
@@ -228,6 +244,7 @@ export async function parseHologramV4Header(
   const magicBytesHex = Array.from(bytes.slice(0, 6))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join(' ');
+  const initialSynthetic = Boolean(options.isSyntheticFixture);
 
   if (bytes.length === 0) {
     return {
@@ -258,6 +275,13 @@ export async function parseHologramV4Header(
       sections: [],
       hasCoreWasmMagic: false,
       hasHoloviewMagic: false,
+      isSyntheticFixture: initialSynthetic,
+      trustLayers: buildHoloTrustLayers({
+        structuralPass: false,
+        formatParsePass: false,
+        sha256MatchedExpected,
+        isSyntheticFixture: initialSynthetic,
+      }),
       errors: ['PP3001: Empty archive payload has no Hologram v4 header.'],
       diagnostic: 'PP3001: Empty archive payload is not a valid Hologram v4 container.',
     };
@@ -293,6 +317,13 @@ export async function parseHologramV4Header(
       sections: [],
       hasCoreWasmMagic: false,
       hasHoloviewMagic: false,
+      isSyntheticFixture: initialSynthetic,
+      trustLayers: buildHoloTrustLayers({
+        structuralPass: false,
+        formatParsePass: false,
+        sha256MatchedExpected,
+        isSyntheticFixture: initialSynthetic,
+      }),
       errors: [
         'PP3001: Plain JSON text starting with "{" cannot masquerade as binary HOLO\\x04\\0.',
       ],
@@ -303,6 +334,57 @@ export async function parseHologramV4Header(
 
   const hasCoreWasmScan = findSubsequenceIndex(bytes, WASM_BINARY_MAGIC, 0) >= 0;
   const hasHoloviewScan = findSubsequenceIndex(bytes, HOLOVIEW_MAGIC, 0) >= 0;
+
+  // Reject unsupported HOLO major/minor versions explicitly (e.g., HOLO\x03\x00)
+  if (
+    bytes.length >= 6 &&
+    bytes[0] === 0x48 &&
+    bytes[1] === 0x4f &&
+    bytes[2] === 0x4c &&
+    bytes[3] === 0x4f &&
+    (bytes[4] !== 0x04 || bytes[5] !== 0x00)
+  ) {
+    return {
+      valid: false,
+      structuralIntegrityValid: false,
+      manifestValid: false,
+      status: 'UNSUPPORTED_ARCHIVE_VERSION',
+      errorCode: 'PP3001',
+      byteLength: bytes.length,
+      sha256Hash: sha256Hex,
+      sha256Hex,
+      sha256MatchedExpected,
+      metadata: {
+        magic: `HOLO\\x${bytes[4].toString(16).padStart(2, '0')}\\x${bytes[5].toString(16).padStart(2, '0')}`,
+        magicBytesHex,
+        formatVersion: `v${bytes[4]}.${bytes[5]}`,
+        majorVersion: bytes[4],
+        minorVersion: bytes[5],
+        flags: 0,
+        sectionCount: 0,
+        byteLength: bytes.length,
+        manifestByteLength: 0,
+        footerNonZero: false,
+        hasCoreWasmMagic: hasCoreWasmScan,
+        hasHoloviewMagic: hasHoloviewScan,
+        sections: [],
+      },
+      sections: [],
+      hasCoreWasmMagic: hasCoreWasmScan,
+      hasHoloviewMagic: hasHoloviewScan,
+      isSyntheticFixture: initialSynthetic,
+      trustLayers: buildHoloTrustLayers({
+        structuralPass: false,
+        formatParsePass: false,
+        sha256MatchedExpected,
+        isSyntheticFixture: initialSynthetic,
+      }),
+      errors: [
+        `PP3001: Unsupported Hologram archive version v${bytes[4]}.${bytes[5]} (${magicBytesHex}). Only HOLO\\x04\\0 (v4.0) is supported by preflight.`,
+      ],
+      diagnostic: `PP3001: Unsupported HOLO archive version v${bytes[4]}.${bytes[5]}. Only HOLO\\x04\\0 is accepted.`,
+    };
+  }
 
   if (!bytesMatchAt(bytes, HOLO_V4_MAGIC, 0)) {
     return {
@@ -333,6 +415,13 @@ export async function parseHologramV4Header(
       sections: [],
       hasCoreWasmMagic: hasCoreWasmScan,
       hasHoloviewMagic: hasHoloviewScan,
+      isSyntheticFixture: initialSynthetic,
+      trustLayers: buildHoloTrustLayers({
+        structuralPass: false,
+        formatParsePass: false,
+        sha256MatchedExpected,
+        isSyntheticFixture: initialSynthetic,
+      }),
       errors: [
         `PP3001: Invalid Hologram v4 magic (${magicBytesHex}); expected 48 4f 4c 4f 04 00 (HOLO\\x04\\0).`,
       ],
@@ -442,29 +531,41 @@ export async function parseHologramV4Header(
 
           if (manifest.sections.includes('holoview') && !hasHoloviewMagic) {
             errors.push(
-              'Manifest declares "holoview" section, but HOLOVIEW\\0\\x01 payload header is missing.'
+              'Structural error: Manifest declares "holoview" section, but HOLOVIEW\\0\\x01 payload header is missing or overlaps footer.'
             );
             manifestValid = false;
           } else if (hasHoloviewMagic) {
+            const within = holoviewOffset >= manifestEnd && holoviewOffset + HOLOVIEW_MAGIC.length <= footerStart;
+            if (!within) {
+              errors.push(
+                'Structural error: "holoview" section offset overlaps manifest or 32-byte footer.'
+              );
+            }
             sections.push({
               name: 'holoview',
               offset: holoviewOffset,
               byteLength: HOLOVIEW_MAGIC.length,
-              withinBounds: holoviewOffset >= manifestEnd && holoviewOffset < footerStart,
+              withinBounds: within,
             });
           }
 
           if (manifest.sections.includes('core-wasm') && !hasCoreWasmMagic) {
             errors.push(
-              'Manifest declares "core-wasm" section, but \\0asm Core-Wasm binary header is missing.'
+              'Structural error: Manifest declares "core-wasm" section, but \\0asm Core-Wasm binary header is missing or overlaps footer.'
             );
             manifestValid = false;
           } else if (hasCoreWasmMagic) {
+            const within = wasmOffset >= manifestEnd && wasmOffset + WASM_BINARY_MAGIC.length <= footerStart;
+            if (!within) {
+              errors.push(
+                'Structural error: "core-wasm" section offset overlaps manifest or 32-byte footer.'
+              );
+            }
             sections.push({
               name: 'core-wasm',
               offset: wasmOffset,
               byteLength: WASM_BINARY_MAGIC.length,
-              withinBounds: wasmOffset >= manifestEnd && wasmOffset < footerStart,
+              withinBounds: within,
             });
           }
         }
@@ -495,6 +596,18 @@ export async function parseHologramV4Header(
     if (options.requireManifest) {
       errors.push(
         'Missing structured Hologram v4 manifest ("MFST") section required by build verification.'
+      );
+    }
+  }
+
+  // Verify section ranges never overlap each other
+  const sortedSections = [...sections].sort((a, b) => a.offset - b.offset);
+  for (let i = 1; i < sortedSections.length; i++) {
+    const prev = sortedSections[i - 1];
+    const curr = sortedSections[i];
+    if (curr.offset < prev.offset + prev.byteLength || !prev.withinBounds || !curr.withinBounds) {
+      errors.push(
+        `Structural error: Section "${curr.name}" (${curr.offset}) overlaps or exceeds bounds relative to "${prev.name}".`
       );
     }
   }
@@ -569,14 +682,27 @@ export async function parseHologramV4Header(
     createdAt: manifest?.createdAt,
   };
 
-  const status: HoloArchiveValidationStatus = valid
-    ? 'VALID_HOLO_V4'
-    : 'INVALID_MAGIC_OR_FOOTER';
+  const isSyntheticFixture =
+    initialSynthetic || manifest?.fixtureOrigin === 'SYNTHETIC_TEST_FIXTURE';
 
+  const status: HoloArchiveValidationStatus = valid
+    ? 'STRUCTURAL PREFLIGHT PASS'
+    : errorCode === 'INVALID_MANIFEST'
+      ? 'INVALID_MANIFEST'
+      : 'INVALID_MAGIC_OR_FOOTER';
+
+  const trustLayers = buildHoloTrustLayers({
+    structuralPass: structuralIntegrityValid && (!requireManifest || manifestValid),
+    formatParsePass: structuralIntegrityValid && manifestValid,
+    sha256MatchedExpected,
+    isSyntheticFixture,
+  });
+
+  const prefixLabel = isSyntheticFixture ? '[SYNTHETIC FIXTURE] ' : '';
   const diagnostic = valid
     ? manifest
-      ? `Validated Hologram v4 (${manifest.sections.length} sections, manifest "${manifest.schema}", rev ${manifest.sourceRevision}) & 32-byte trailer.`
-      : 'Validated physical HOLO\\x04\\0 container magic header and 32-byte trailer.'
+      ? `${prefixLabel}Structural preflight passed Hologram v4 (${manifest.sections.length} sections, manifest "${manifest.schema}", rev ${manifest.sourceRevision}) & 32-byte trailer. Independent Hologram Live CLI verify not run in browser.`
+      : `${prefixLabel}Structural preflight passed HOLO\\x04\\0 header and 32-byte trailer. Independent Hologram Live CLI verify not run in browser.`
     : errors[0] ?? 'Hologram v4 structural or manifest validation failed.';
 
   return {
@@ -595,15 +721,17 @@ export async function parseHologramV4Header(
     manifest,
     hasCoreWasmMagic,
     hasHoloviewMagic,
+    isSyntheticFixture,
+    trustLayers,
     errors,
     diagnostic,
   };
 }
 
 /**
- * Constructs a spec-compliant Hologram v4 binary ArrayBuffer containing `HOLO\x04\0`,
+ * Constructs a synthetic Hologram v4 binary ArrayBuffer containing `HOLO\x04\0`,
  * `"MFST"` directory header, embedded JSON manifest, `HOLOVIEW\0\x01`, `\0asm` Core-Wasm
- * binary header, and a non-zero 32-byte trailer seal.
+ * binary header, and a non-zero 32-byte trailer seal (browser test fixture only).
  */
 export function buildHologramV4Buffer(params: {
   projectId: string;
@@ -617,8 +745,11 @@ export function buildHologramV4Buffer(params: {
   includeHoloview?: boolean;
   corruptManifest?: boolean;
   omitFooter?: boolean;
+  zeroFooter?: boolean;
+  isSyntheticFixture?: boolean;
 }): ArrayBuffer {
   const sections = params.sections ?? ['model.prism.json', 'core-wasm', 'holoview'];
+  const isSyntheticFixture = params.isSyntheticFixture ?? true;
   const manifestObj: HoloV4ManifestContent = {
     schema: 'prismpm/holo-v4-manifest/1',
     projectId: params.projectId,
@@ -627,6 +758,7 @@ export function buildHologramV4Buffer(params: {
     entrypoint: params.entrypoint ?? 'holo_run',
     coreWasmContract: params.coreWasmContract ?? 'hologram:guest/core-wasm@1',
     viewProfile: params.viewProfile ?? 'prism.browser-view/1',
+    fixtureOrigin: isSyntheticFixture ? 'SYNTHETIC_TEST_FIXTURE' : undefined,
     sections,
     createdAt: '2026-11-15T08:00:00Z',
   };
@@ -638,7 +770,11 @@ export function buildHologramV4Buffer(params: {
   const includeHoloview = params.includeHoloview ?? true;
   const includeWasm = params.includeWasm ?? true;
   const wasmVersion = new Uint8Array([0x01, 0x00, 0x00, 0x00]);
-  const footer = params.omitFooter ? new Uint8Array(0) : new Uint8Array(32).fill(0xab);
+  const footer = params.omitFooter
+    ? new Uint8Array(0)
+    : params.zeroFooter
+      ? new Uint8Array(32)
+      : new Uint8Array(32).fill(0xab);
 
   const holoviewLen = includeHoloview ? HOLOVIEW_MAGIC.length : 0;
   const wasmLen = includeWasm ? WASM_BINARY_MAGIC.length + wasmVersion.length : 0;

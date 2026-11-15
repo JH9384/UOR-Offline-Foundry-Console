@@ -52,16 +52,26 @@ export type WorkflowStageContractName =
 export type PrismInputMode = 'NATIVE_PRISM' | 'EXISTING_RUST' | 'GUIDED_PRODUCT';
 
 export type PrismOutputClassId =
+  | 'authoritative_lex_tex'
   | 'model_prism_json'
-  | 'lexlean_semantic_proof'
-  | 'generated_lean_attestation'
-  | 'lcnf_named_root_export'
-  | 'cargo_crate_native'
-  | 'core_wasm_guest'
-  | 'portable_holoview'
-  | 'binary_holo_archive'
-  | 'build_source_manifests'
-  | 'verification_acceptance_records';
+  | 'generated_lean_proof_evidence'
+  | 'lcnf_outputs'
+  | 'generated_cargo_package'
+  | 'core_wasm_module'
+  | 'portable_view_assets'
+  | 'physical_holo_archive'
+  | 'build_manifests_and_digests'
+  | 'independent_acceptance_records'
+  | 'release_decision_records';
+
+export type ArtifactLifecycleState =
+  | 'PROPOSED'
+  | 'GENERATED'
+  | 'BUILT'
+  | 'PREFLIGHT_CHECKED'
+  | 'VERIFIED'
+  | 'FAILED'
+  | 'UNAVAILABLE';
 
 export interface StageProducedArtifactRef {
   path: string;
@@ -200,8 +210,10 @@ export interface StageExecutionRecord {
   summary: string;
   resultOrDiagnostic?: string;
   commandOrContract?: string;
+  fixedCommandId?: string;
   producedArtifacts?: StageProducedArtifactRef[];
   evidenceRef?: string;
+  failuresOrBlockingRules?: string[];
   finalState?: StageRunStatus;
   isSimulated: boolean;
 }
@@ -284,9 +296,16 @@ export interface ProjectSourcePin {
 export interface ProjectComplianceRequirement {
   id: string;
   sourceId: ReviewedSourceId;
+  acceptanceId: string;
+  sourceUrl: string;
+  pinnedRevision: string;
   title: string;
   applicable: boolean;
   applicabilityRationale: string;
+  applicableVerifier: string;
+  executionIdentity: string;
+  evidenceRecord: string;
+  evaluationResult: 'PASS' | 'FAIL' | 'BLOCKED' | 'UNTESTED' | 'REFUTED' | 'NOT APPLICABLE';
   satisfied: boolean;
   statusLabel: 'SATISFIED' | 'GAP' | 'BLOCKED' | 'NOT APPLICABLE';
   gapReason?: string;
@@ -434,18 +453,32 @@ export interface VerificationSuiteRecord {
 export type ArtifactLifecycleBadge = 'Validated' | 'Pending' | 'Superseded';
 
 export type HoloArchiveValidationStatus =
-  | 'VALID_HOLO_V4'
-  | 'VALID_HOLO_V5_UORC'
+  | 'STRUCTURAL PREFLIGHT PASS'
+  | 'UNSUPPORTED_ARCHIVE_VERSION'
+  | 'INVALID_MANIFEST'
   | 'REJECTED_JSON_AS_HOLO_PP3001'
   | 'INVALID_MAGIC_OR_FOOTER'
   | 'UNINSPECTED';
+
+export type TrustLayerOutcome = 'PASS' | 'FAIL' | 'NOT_RUN_IN_BROWSER' | 'INCOMPLETE_UPSTREAM' | 'BLOCKED';
+
+export interface HoloVerificationTrustLayers {
+  structuralPreflight: 'PASS' | 'FAIL';
+  contentDigestValidation: 'PASS' | 'FAIL' | 'UNVERIFIED_DIGEST';
+  archiveFormatParsing: 'PASS' | 'FAIL';
+  independentHologramVerification: 'NOT_RUN_IN_BROWSER' | 'PASS' | 'FAIL';
+  prismPmAcceptance: 'INCOMPLETE_UPSTREAM' | 'PASS' | 'FAIL';
+  productionReleaseAuthorization: 'BLOCKED' | 'APPROVED_FOR_RELEASE';
+  isSyntheticFixture: boolean;
+}
 
 export interface ArtifactProvenanceRecord {
   id: string;
   projectId: string;
   artifactName: string;
   artifactFormat: string;
-  outputClass?: PrismOutputClassId;
+  outputClass: PrismOutputClassId;
+  artifactState: ArtifactLifecycleState;
   sha256Digest: string;
   digestMode: 'SYNTHETIC_DEMO_DIGEST' | 'DOCUMENTED_REFERENCE_DIGEST' | 'UNAVAILABLE';
   provenanceStatus?: ArtifactLifecycleBadge;
@@ -459,10 +492,13 @@ export interface ArtifactProvenanceRecord {
   byteLength?: number;
   fragmentRecoverySpec?: '2-of-3-xor-sha256-planned' | 'none';
   custodyBoundaryNote?: string;
+  isSyntheticFixture?: boolean;
+  previewContent?: string;
   /**
    * Direct binary/source/evidence download gating.
    * Downloads of `.holo`, Core-Wasm, HOLOVIEW, generated source, or evidence bundles
-   * are disabled unless a verified tool-produced file exists with verified SHA-256.
+   * are disabled unless a verified tool-produced file exists with verified SHA-256
+   * AND artifactState === 'VERIFIED'.
    */
   fileExistsOnDisk?: boolean;
   sha256Verified?: boolean;

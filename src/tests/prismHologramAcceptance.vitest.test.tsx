@@ -39,19 +39,20 @@ afterEach(() => {
 describe('Prism Source-to-Hologram Production Integration & Failure Paths', () => {
   it('pins all 8 authoritative repositories at exact full 40-char commit SHAs', () => {
     const map = Object.fromEntries(PINNED_REPOSITORY_MANIFEST.map((m) => [m.sourceId, m.pinnedCommitSha]));
-    expect(map['prismpm']).toBe('b8bbabcf27392d65e58fe6e27612bdb785aa2939');
+    expect(map['prismpm']).toBe('6c876017bffa0e770cffc2225cb2d2422c35a69a');
     expect(map['lexlean']).toBe('71defb4c663aaec5b9a3aab04cbc6a03e7106227');
     expect(map['foundry']).toBe('760eaac29687628c7c66e8d492e126afa194656e');
-    expect(map['hologram-live']).toBe('cbbf97b5b8199f5865721171e582d8df6ad53166');
+    expect(map['hologram-live']).toBe('cbbf97b5b8199f5701c621cd3ba0b26187417ffa');
     expect(map['prism-devrel']).toBe('8af99e96f6bd9f5865721171e582d8df6ad53166');
     expect(map['uorust']).toBe('5868afe38012d647be00ad948949b1e384b87211');
     expect(map['rule30']).toBe('e3be477fded263029479127363f7fb6a3597e7d4');
     expect(map['stitch']).toBe('1607d53dfc5a34324f8102123d166d727cc66634');
   });
 
-  it('models PrismPM/examples/Calculator across all 10 workflow stages with audit fields & fail-closed release', () => {
+  it('models PrismPM/examples/Calculator across all 10 workflow stages and all 11 typed artifact output classes', () => {
     const calc = INITIAL_PROJECTS.find((p) => p.id === 'proj-prism-calc')!;
     const calcRun = INITIAL_WORKFLOW_RUNS.find((r) => r.projectId === 'proj-prism-calc')!;
+    const calcArts = INITIAL_ARTIFACTS.filter((a) => a.projectId === 'proj-prism-calc');
     expect(calc.inputMode).toBe('NATIVE_PRISM');
     expect(calcRun.stages.map((s) => s.stageContractName)).toEqual([
       'INTAKE',
@@ -68,9 +69,15 @@ describe('Prism Source-to-Hologram Production Integration & Failure Paths', () =
     for (const stage of calcRun.stages) {
       expect(stage.executionId).toBeTruthy();
       expect(stage.toolchainIdentity).toBeTruthy();
-      expect(stage.sourceRevision).toBe('prismpm/main@b8bbabcf');
+      expect(stage.sourceRevision).toBe('prismpm/main@6c876017');
       expect(stage.finalState).toBeTruthy();
+      expect(stage.fixedCommandId).toBeTruthy();
     }
+    // Complete 11-class typed output contract
+    const outputClasses = new Set(calcArts.map((a) => a.outputClass));
+    expect(outputClasses.size).toBe(11);
+    expect(calcArts.every((a) => a.artifactState !== 'VERIFIED')).toBe(true);
+
     const evalSummary = verificationAuthorityService.evaluateProjectAuthority({
       project: calc,
       verifications: INITIAL_VERIFICATION_SUITES,
@@ -81,32 +88,39 @@ describe('Prism Source-to-Hologram Production Integration & Failure Paths', () =
     expect(evalSummary.overallVerificationState).toBe('NOT VERIFIED');
   });
 
-  it('validates real HOLO\\x04\\0 v4 and UORC\\x02\\x01 v5 binaries and rejects JSON masquerading as .holo with PP3001', async () => {
-    // 1. Valid HOLO v4 buffer + matching SHA-256
+  it('returns STRUCTURAL PREFLIGHT PASS (never verification) for valid HOLO\\x04\\0 v4 and UORC\\x02\\x01 v5 binaries and rejects JSON as PP3001', async () => {
+    // 1. Valid HOLO v4 fixture + non-zero trailer + matching SHA-256 -> STRUCTURAL PREFLIGHT PASS
     const v4Bytes = buildSyntheticHoloV4TestFixtureBytes('calc-ref-v4');
     const v4Digest = await computeSha256Hex(v4Bytes);
-    const v4Pass = await inspectHoloArchiveBytes(v4Bytes, v4Digest);
+    const v4Pass = await inspectHoloArchiveBytes(v4Bytes, v4Digest, { isSyntheticFixture: true });
     expect(v4Pass.valid).toBe(true);
-    expect(v4Pass.status).toBe('VALID_HOLO_V4');
+    expect(v4Pass.status).toBe('STRUCTURAL PREFLIGHT PASS');
+    expect(v4Pass.isSyntheticFixture).toBe(true);
     expect(v4Pass.hasCoreWasmMagic).toBe(true);
     expect(v4Pass.hasHoloviewMagic).toBe(true);
     expect(v4Pass.footerPresent).toBe(true);
     expect(v4Pass.sha256MatchedExpected).toBe(true);
+    expect(v4Pass.trustLayers.independentHologramVerification).toBe('NOT_RUN_IN_BROWSER');
+    expect(v4Pass.trustLayers.productionReleaseAuthorization).toBe('BLOCKED');
 
     // 2. SHA-256 manifest mismatch triggers PP5401
     const v4Mismatch = await inspectHoloArchiveBytes(v4Bytes, '0'.repeat(64));
     expect(v4Mismatch.valid).toBe(false);
     expect(v4Mismatch.errorCode).toBe('PP5401');
 
-    // 3. Valid UORC v5 container header + uleb role count >= 7 + 32-byte seal
+    // 3. Valid UORC v5 container header + uleb role count >= 7 + non-zero 32-byte seal
     const v5Bytes = new Uint8Array(HOLO_V5_UORC_MAGIC.length + 2 + 1 + 16 + 32);
     v5Bytes.set(HOLO_V5_UORC_MAGIC, 0);
     v5Bytes[6] = 0x00;
     v5Bytes[7] = 0x00;
     v5Bytes[8] = 0x07; // 7 roles uleb
+    for (let i = v5Bytes.length - 32; i < v5Bytes.length; i++) {
+      v5Bytes[i] = ((i * 19) ^ 0x3c) & 0xff || 0x11;
+    }
     const v5Pass = await inspectHoloArchiveBytes(v5Bytes);
     expect(v5Pass.valid).toBe(true);
-    expect(v5Pass.status).toBe('VALID_HOLO_V5_UORC');
+    expect(v5Pass.status).toBe('STRUCTURAL PREFLIGHT PASS');
+    expect(v5Pass.archiveVersion).toBe('v5-uorc');
 
     // 4. Legacy JSON disguised as .holo rejected with PP3001
     const jsonBytes = new TextEncoder().encode('{"fake":"calculator.holo","version":4}');
@@ -116,15 +130,26 @@ describe('Prism Source-to-Hologram Production Integration & Failure Paths', () =
     expect(jsonReject.errorCode).toBe('PP3001');
   });
 
-  it('gates direct binary/source/wasm/evidence downloads strictly on on-disk existence + SHA-256 verification', async () => {
+  it('gates direct binary/source/wasm/evidence downloads strictly on on-disk existence + SHA-256 + VERIFIED state', async () => {
     expect(canDownloadVerifiedArtifact(undefined)).toBe(false);
-    expect(canDownloadVerifiedArtifact({ fileExistsOnDisk: false, sha256Verified: true })).toBe(false);
-    expect(canDownloadVerifiedArtifact({ fileExistsOnDisk: true, sha256Verified: false })).toBe(false);
-    expect(canDownloadVerifiedArtifact({ fileExistsOnDisk: true, sha256Verified: true })).toBe(true);
+    expect(
+      canDownloadVerifiedArtifact({ fileExistsOnDisk: false, sha256Verified: true, artifactState: 'VERIFIED' })
+    ).toBe(false);
+    expect(
+      canDownloadVerifiedArtifact({ fileExistsOnDisk: true, sha256Verified: false, artifactState: 'VERIFIED' })
+    ).toBe(false);
+    expect(
+      canDownloadVerifiedArtifact({ fileExistsOnDisk: true, sha256Verified: true, artifactState: 'PREFLIGHT_CHECKED' })
+    ).toBe(false);
+    expect(
+      canDownloadVerifiedArtifact({ fileExistsOnDisk: true, sha256Verified: true, artifactState: 'VERIFIED' })
+    ).toBe(true);
 
     const calc = INITIAL_PROJECTS.find((p) => p.id === 'proj-prism-calc')!;
     const calcArts = INITIAL_ARTIFACTS.filter((a) => a.projectId === calc.id);
-    render(<ArtifactsView projects={[calc]} artifacts={calcArts} selectedProjectId={calc.id} />);
+    const holoArt = calcArts.find((a) => a.outputClass === 'physical_holo_archive')!;
+    const orderedArts = [holoArt, ...calcArts.filter((a) => a.id !== holoArt.id)];
+    render(<ArtifactsView projects={[calc]} artifacts={orderedArts} selectedProjectId={calc.id} />);
 
     // All 4 verified direct download buttons must be disabled in browser sandbox
     const gate = within(screen.getByTestId('direct-download-gate'));
@@ -133,14 +158,16 @@ describe('Prism Source-to-Hologram Production Integration & Failure Paths', () =
     expect(holoBtn.disabled).toBe(true);
     expect(wasmBtn.disabled).toBe(true);
 
-    // Interactive inspector self-tests validate both PP3001 rejection and HOLO\x04\0 acceptance
+    // Interactive inspector self-tests validate both PP3001 rejection and HOLO\x04\0 structural preflight
     fireEvent.click(screen.getByRole('button', { name: /Test `PP3001` JSON Rejection/i }));
     await new Promise((r) => setTimeout(r, 25));
     expect(screen.getByTestId('holo-inspection-result').textContent).toContain('REJECTED_JSON_AS_HOLO_PP3001');
 
-    fireEvent.click(screen.getByRole('button', { name: /Test Valid `HOLO\\x04\\0` Bytes/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Run Structural Preflight \(Synthetic/i }));
     await new Promise((r) => setTimeout(r, 25));
-    expect(screen.getByTestId('holo-inspection-result').textContent).toContain('VALID_HOLO_V4');
+    expect(screen.getByTestId('holo-inspection-result').textContent).toContain('STRUCTURAL PREFLIGHT PASS');
+    expect(screen.getByTestId('holo-inspection-result').textContent).toContain('SYNTHETIC FIXTURE');
+    expect(screen.getByTestId('holo-trust-layers').textContent).toContain('NOT_RUN_IN_BROWSER');
     expect(screen.getByTestId('holo-manifest-summary').textContent).toContain('prismpm/holo-v4-manifest/1');
 
     fireEvent.click(screen.getByRole('button', { name: /Test Corrupt Manifest Rejection/i }));
@@ -186,16 +213,16 @@ describe('Prism Source-to-Hologram Production Integration & Failure Paths', () =
   });
 
   it('enforces fixed Windmill command registry & rejects arbitrary shell strings or path traversal', async () => {
-    expect(FIXED_WINDMILL_COMMAND_REGISTRY.length).toBeGreaterThanOrEqual(14);
+    expect(FIXED_WINDMILL_COMMAND_REGISTRY.length).toBe(16);
 
-    // Valid fixed command succeeds registry check (but fail-closed Windmill adapter blocks dispatch without auth)
+    // Valid fixed command succeeds registry check with verified `prismpm --project <path> build --locked` syntax
     const valid = validateFixedRegistryCommand({
       commandId: 'prismpm_build_locked',
-      sourceRevision: 'prismpm/main@b8bbabcf',
+      sourceRevision: 'prismpm/main@6c876017',
       projectRelativePath: 'examples/Calculator',
     });
     expect(valid.allowed).toBe(true);
-    expect(valid.validatedArgv).toEqual(['prismpm', 'build', '--locked', '--project', 'examples/Calculator']);
+    expect(valid.validatedArgv).toEqual(['prismpm', '--project', 'examples/Calculator', 'build', '--locked']);
 
     const localService = new FailClosedLocalWindmillService('WINDMILL_NATIVE_WMILL_TS');
     const dispatchRes = await localService.submitAuthorizedWorkflow({
@@ -204,8 +231,8 @@ describe('Prism Source-to-Hologram Production Integration & Failure Paths', () =
       projectId: 'proj-prism-calc',
       workflowId: 'wf-prismpm-delivery',
       flowPath: 'f/uor_foundry/prismpm_build_locked',
-      flowVersion: 'b8bbabcf',
-      sourceRevision: 'prismpm/main@b8bbabcf',
+      flowVersion: '6c876017',
+      sourceRevision: 'prismpm/main@6c876017',
       operatorApproved: true,
       requestedAt: '2026-11-15T08:00:00Z',
       commandId: 'prismpm_build_locked',
@@ -219,7 +246,7 @@ describe('Prism Source-to-Hologram Production Integration & Failure Paths', () =
     // Negative: raw shell string rejected immediately by fixed command registry
     const shellInjectCheck = validateFixedRegistryCommand({
       commandId: 'prismpm_check',
-      sourceRevision: 'prismpm/main@b8bbabcf',
+      sourceRevision: 'prismpm/main@6c876017',
       projectRelativePath: 'examples/Calculator',
       rawCommandString: 'prismpm check; rm -rf /',
     });
@@ -232,8 +259,8 @@ describe('Prism Source-to-Hologram Production Integration & Failure Paths', () =
       projectId: 'proj-prism-calc',
       workflowId: 'wf-prismpm-delivery',
       flowPath: 'f/uor_foundry/prismpm_check',
-      flowVersion: 'b8bbabcf',
-      sourceRevision: 'prismpm/main@b8bbabcf',
+      flowVersion: '6c876017',
+      sourceRevision: 'prismpm/main@6c876017',
       operatorApproved: true,
       requestedAt: '2026-11-15T08:01:00Z',
       commandId: 'prismpm_check',
@@ -249,7 +276,7 @@ describe('Prism Source-to-Hologram Production Integration & Failure Paths', () =
     // Negative: path traversal rejected
     const traversal = validateFixedRegistryCommand({
       commandId: 'prismpm_verify',
-      sourceRevision: 'prismpm/main@b8bbabcf',
+      sourceRevision: 'prismpm/main@6c876017',
       projectRelativePath: '../../etc',
     });
     expect(traversal.allowed).toBe(false);
@@ -268,7 +295,7 @@ describe('Prism Source-to-Hologram Production Integration & Failure Paths', () =
         disposition: 'APPROVED_FOR_RELEASE' as const,
         authorizedReviewer: 'Release Board',
         decidedAt: '2026-11-15T08:00:00Z',
-        sourceRevision: 'prismpm/main@b8bbabcf',
+        sourceRevision: 'prismpm/main@6c876017',
         evidenceRefs: prevSuites.map((s) => s.evidenceId),
       },
     ];
@@ -341,7 +368,8 @@ describe('Prism Source-to-Hologram Production Integration & Failure Paths', () =
     expect(parsed.manifest?.entrypoint).toBe('holo_run');
     expect(parsed.manifest?.sections).toEqual(['model.prism.json', 'core-wasm', 'holoview']);
 
-    // Build verification passes when physical bytes match digest + revision + manifest
+    // Build preflight check passes when synthetic fixture matches digest + revision + manifest
+    // Browser preflight must yield PREFLIGHT_CHECKED + STRUCTURAL PREFLIGHT PASS (never VERIFIED)
     const stagePass = await foundryService.verifyBuildHoloArtifact({
       project: calc,
       artifact: {
@@ -352,7 +380,8 @@ describe('Prism Source-to-Hologram Production Integration & Failure Paths', () =
       archiveBytes: validBytes,
     });
     expect(stagePass.passed).toBe(true);
-    expect(stagePass.validationStatus).toBe('VALID_HOLO_V4');
+    expect(stagePass.validationStatus).toBe('STRUCTURAL PREFLIGHT PASS');
+    expect(stagePass.updatedArtifactFields?.artifactState).toBe('PREFLIGHT_CHECKED');
     expect(stagePass.updatedArtifactFields?.sha256Verified).toBe(true);
 
     // 2. Corrupt embedded manifest JSON fails manifest validation cleanly
@@ -415,23 +444,29 @@ describe('Prism Source-to-Hologram Production Integration & Failure Paths', () =
     expect(noDiskStage.validationStatus).toBe('UNINSPECTED');
   });
 
-  it('implements src/services/hologramService parseHologramV4Header(ArrayBuffer) & triggers automatic validation scan in ArtifactsView on .holo selection', async () => {
+  it('implements src/services/hologramService parseHologramV4Header(ArrayBuffer) & triggers automatic preflight scan in ArtifactsView on .holo selection', async () => {
     const calc = INITIAL_PROJECTS.find((p) => p.id === 'proj-prism-calc')!;
     const calcArts = INITIAL_ARTIFACTS.filter((a) => a.projectId === calc.id);
-    const holoArt = calcArts.find((a) => a.artifactName.includes('.holo')) ?? calcArts[0]!;
+    const holoArt = calcArts.find((a) => a.outputClass === 'physical_holo_archive')!;
+    const orderedArts = [holoArt, ...calcArts.filter((a) => a.id !== holoArt.id)];
 
     const arrayBuf = buildHologramV4Buffer({
       projectId: calc.id,
       projectName: calc.name,
       sourceRevision: calc.sourceRevision,
+      isSyntheticFixture: true,
     });
     expect(arrayBuf).toBeInstanceOf(ArrayBuffer);
 
     const parsed = await parseHologramV4HeaderFromRootService(arrayBuf, {
       expectedProjectId: calc.id,
       expectedSourceRevision: calc.sourceRevision,
+      isSyntheticFixture: true,
     });
     expect(parsed.valid).toBe(true);
+    expect(parsed.status).toBe('STRUCTURAL PREFLIGHT PASS');
+    expect(parsed.isSyntheticFixture).toBe(true);
+    expect(parsed.trustLayers.independentHologramVerification).toBe('NOT_RUN_IN_BROWSER');
     expect(parsed.sha256Hash).toMatch(/^[0-9a-f]{64}$/);
     expect(parsed.metadata.magic).toBe('HOLO\\x04\\0');
     expect(parsed.metadata.formatVersion).toBe('v4.0');
@@ -444,14 +479,14 @@ describe('Prism Source-to-Hologram Production Integration & Failure Paths', () =
     render(
       <ArtifactsView
         projects={[calc]}
-        artifacts={calcArts}
+        artifacts={orderedArts}
         selectedProjectId={calc.id}
         artifactBuffers={{ [holoArt.id]: arrayBuf }}
       />
     );
     await new Promise((r) => setTimeout(r, 30));
-    expect(screen.getByTestId('holo-auto-scan-status').textContent).toContain('Auto-Scan');
-    expect(screen.getByTestId('holo-auto-scan-status').textContent).toContain('VALID_HOLO_V4');
+    expect(screen.getByTestId('holo-auto-scan-status').textContent).toContain('Structural Preflight');
+    expect(screen.getByTestId('holo-auto-scan-status').textContent).toContain('STRUCTURAL PREFLIGHT PASS');
     expect(screen.getByTestId('holo-inspection-result').textContent).toContain(parsed.sha256Hash);
     expect(screen.getByTestId('holo-manifest-summary').textContent).toContain('prismpm/holo-v4-manifest/1');
 

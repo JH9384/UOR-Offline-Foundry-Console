@@ -34,10 +34,10 @@ The `Source Review & Compliance` panel (accessible in `Verify & Release` and the
 
 | Source | Inspected Commit SHA | License | Integration Status | Key Constraints Preserved |
 | --- | --- | --- | --- | --- |
-| `UOR-Foundation/PrismPM` | `b8bbabcf27392d65e58fe6e27612bdb785aa2939` | `MIT OR Apache-2.0` | `CANDIDATE` | `HOLO\x04\0` v4 & `UORC\x02\x01` v5 binaries; `PP3001` rejects JSON-as-`.holo`; `PP2011` Browser closed upstream |
+| `UOR-Foundation/PrismPM` | `6c876017bffa0e770cffc2225cb2d2422c35a69a` | `MIT OR Apache-2.0` | `CANDIDATE` | `HOLO\x04\0` v4 & `UORC\x02\x01` v5 binaries; `PP3001` rejects JSON-as-`.holo`; `PP2011` Browser closed upstream |
 | `UOR-Foundation/LexLean` | `71defb4c663aaec5b9a3aab04cbc6a03e7106227` | `MIT OR Apache-2.0` | `CANDIDATE` | `leanprover/lean4:v4.32.1`, closed `.lex.tex`; `fmt/check/build` never prove `verify` |
 | `UOR-Foundation/foundry` | `760eaac29687628c7c66e8d492e126afa194656e` | `MIT OR Apache-2.0` | `REFERENCE ONLY` | Enforces `INV-001`..`INV-004` proof invalidation on source edit and strict release refusal |
-| `Hologram-Technologies/hologram-live` | `cbbf97b5b8199f5865721171e582d8df6ad53166` | `Apache-2.0` | `CANDIDATE` | Import-free `hologram:guest/core-wasm@1` (`holo_run: (i32, i32) -> i64`); runtime unavailable in browser preview |
+| `Hologram-Technologies/hologram-live` | `cbbf97b5b8199f5701c621cd3ba0b26187417ffa` | `MIT OR Apache-2.0` | `CANDIDATE` | Import-free `hologram:guest/core-wasm@1` (`holo_run: (i32, i32) -> i64`); runtime unavailable in browser preview |
 | `afflom/prism-devrel` | `8af99e96f6bd9f5865721171e582d8df6ad53166` | `MIT OR Apache-2.0` | `CANDIDATE` | Guided Product 7-facet drafts (`uor/template-contract/1`) require explicit human review before PrismPM compilation |
 | `afflom/UORust` | `5868afe38012d647be00ad948949b1e384b87211` | `MIT OR Apache-2.0` | `CANDIDATE` | Cargo projection (`model/routes.toml`), typed `UorustError` span refusals; Cargo build never equals Prism verification |
 | `afflom/rule30` | `e3be477fded263029479127363f7fb6a3597e7d4` | `MIT` | `REFERENCE ONLY` | Prize Problem 1 (`problem1`) & `aperiodic-compensation` remain open (`untested` / `blocked`); `{propext, Quot.sound}` only |
@@ -87,5 +87,5 @@ The `Source Review & Compliance` panel (accessible in `Verify & Release` and the
 
 ## 6. Known Limitations in Browser Preview
 
-- **Direct Download & `.holo` Binary Safety**: Direct `.holo` binary, source archive, `Core-Wasm`, `HOLOVIEW`, and evidence bundle downloads remain strictly disabled unless `fileExistsOnDisk && sha256Verified`. The built-in archive inspector validates `HOLO\x04\0` (v4) and `UORC\x02\x01` (v5) headers and rejects legacy JSON disguised as `.holo` (`PP3001`).
+- **Direct Download & `.holo` Binary Safety**: Direct `.holo` binary, source archive, `Core-Wasm`, `HOLOVIEW`, and evidence bundle downloads remain strictly disabled unless `fileExistsOnDisk && sha256Verified && artifactState === 'VERIFIED'`. The built-in archive preflight inspector checks `HOLO\x04\0` (v4) and `UORC\x02\x01` (v5) headers (`STRUCTURAL PREFLIGHT PASS` only — never independent verification) and rejects unsupported HOLO versions and legacy JSON disguised as `.holo` (`PP3001`).
 - Full-detail engineering and Mac Studio setup documentation lives in [`docs/INTEGRATION_BOUNDARIES.md`](docs/INTEGRATION_BOUNDARIES.md) and [`docs/MAC_STUDIO_QUALIFICATION.md`](docs/MAC_STUDIO_QUALIFICATION.md).

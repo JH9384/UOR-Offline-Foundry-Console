@@ -34,6 +34,7 @@ export interface ArtifactPreviewAdapter {
     run?: WorkflowRun;
     artifacts: ArtifactProvenanceRecord[];
     verifications: VerificationSuiteRecord[];
+    selectedArtifactId?: string;
   }): ArtifactPreviewPayload;
 }
 
@@ -46,11 +47,26 @@ export class FoundryArtifactPreviewAdapter implements ArtifactPreviewAdapter {
     run?: WorkflowRun;
     artifacts: ArtifactProvenanceRecord[];
     verifications: VerificationSuiteRecord[];
+    selectedArtifactId?: string;
   }): ArtifactPreviewPayload {
-    const { kind, mode, project, previewConfig, run, artifacts, verifications } = params;
+    const {
+      kind,
+      mode,
+      project,
+      previewConfig,
+      run,
+      artifacts,
+      verifications,
+      selectedArtifactId,
+    } = params;
     const component = ENGINEERING_COMPONENTS.find((c) => c.id === project.componentId);
     const projectArtifacts = artifacts.filter((a) => a.projectId === project.id);
-    const primaryArtifact = projectArtifacts[0];
+    const primaryArtifact =
+      (selectedArtifactId
+        ? projectArtifacts.find((a) => a.id === selectedArtifactId)
+        : undefined) ??
+      projectArtifacts.find((a) => a.outputClass === 'physical_holo_archive') ??
+      projectArtifacts[0];
     const projectSuites = verifications.filter((v) => v.projectId === project.id);
     const isUnverified = component?.epistemicCondition === 'UNVERIFIED';
 
@@ -94,11 +110,17 @@ export class FoundryArtifactPreviewAdapter implements ArtifactPreviewAdapter {
 
     if (kind === 'document') {
       return {
-        id: `prev-doc-${project.id}`,
+        id: `prev-doc-${project.id}-${primaryArtifact?.id ?? 'spec'}`,
         projectId: project.id,
         kind,
-        title: `${project.name} · Read-Only Specification`,
-        subtitle: `Sanitized intake & boundary summary (${project.acceptancePolicySchema})`,
+        title: primaryArtifact
+          ? `${primaryArtifact.artifactName} · Typed Artifact & Specification`
+          : `${project.name} · Read-Only Specification`,
+        subtitle: primaryArtifact
+          ? `[${primaryArtifact.outputClass}] ${primaryArtifact.artifactState} · ${
+              primaryArtifact.isSyntheticFixture ? 'SYNTHETIC FIXTURE' : primaryArtifact.artifactFormat
+            }`
+          : `Sanitized intake & boundary summary (${project.acceptancePolicySchema})`,
         status,
         originLabel,
         isSandboxed: true,
@@ -112,6 +134,20 @@ export class FoundryArtifactPreviewAdapter implements ArtifactPreviewAdapter {
           `Repository     : ${component?.repositoryName ?? 'Unverified'}`,
           `Source Revision: ${project.sourceRevision}`,
           `Lifecycle      : ${project.lifecycleStatus}`,
+          ...(primaryArtifact
+            ? [
+                ``,
+                `## Selected Artifact (${primaryArtifact.outputClass})`,
+                `Artifact Name  : ${primaryArtifact.artifactName}`,
+                `Lifecycle State: ${primaryArtifact.artifactState}`,
+                `Digest Mode    : ${primaryArtifact.digestMode}`,
+                `SHA-256 Digest : ${primaryArtifact.sha256Digest}`,
+                `Synthetic Flag : ${primaryArtifact.isSyntheticFixture ? 'SYNTHETIC FIXTURE (NON-AUTHORITATIVE)' : 'FALSE'}`,
+                ...(primaryArtifact.previewContent
+                  ? [``, `--- Artifact Preview Content ---`, primaryArtifact.previewContent]
+                  : []),
+              ]
+            : []),
           ...(project.lockfilesDeclared?.length
             ? [`Declared Locks : ${project.lockfilesDeclared.join(', ')}`]
             : []),
@@ -144,11 +180,13 @@ export class FoundryArtifactPreviewAdapter implements ArtifactPreviewAdapter {
 
     if (kind === 'json-artifact') {
       return {
-        id: `prev-json-${project.id}`,
+        id: `prev-json-${project.id}-${primaryArtifact?.id ?? 'none'}`,
         projectId: project.id,
         kind,
         title: primaryArtifact?.artifactName ?? `${project.id}.manifest.json`,
-        subtitle: primaryArtifact?.artifactFormat ?? 'Content-addressed provenance JSON',
+        subtitle: primaryArtifact
+          ? `[${primaryArtifact.outputClass}] ${primaryArtifact.artifactState} · ${primaryArtifact.artifactFormat}`
+          : 'Content-addressed provenance JSON',
         status: primaryArtifact ? status : 'UNAVAILABLE',
         originLabel,
         isSandboxed: true,
@@ -165,6 +203,8 @@ export class FoundryArtifactPreviewAdapter implements ArtifactPreviewAdapter {
               artifactName: primaryArtifact.artifactName,
               artifactFormat: primaryArtifact.artifactFormat,
               outputClass: primaryArtifact.outputClass,
+              artifactState: primaryArtifact.artifactState,
+              isSyntheticFixture: Boolean(primaryArtifact.isSyntheticFixture),
               digestMode: primaryArtifact.digestMode,
               sha256Digest: primaryArtifact.sha256Digest,
               fileExistsOnDisk: Boolean(primaryArtifact.fileExistsOnDisk),
@@ -176,6 +216,7 @@ export class FoundryArtifactPreviewAdapter implements ArtifactPreviewAdapter {
               toolchainIdentity: primaryArtifact.toolchainIdentity,
               inputDependencies: primaryArtifact.inputDependencies,
               releaseReadiness: primaryArtifact.releaseReadiness,
+              previewContent: primaryArtifact.previewContent,
               isAuthoritativeEvidence: false,
             }
           : undefined,
