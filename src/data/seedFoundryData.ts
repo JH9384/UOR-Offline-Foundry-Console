@@ -3,7 +3,10 @@ import {
   AiAdvisoryEntry,
   ApprovalDecisionRecord,
   ArtifactProvenanceRecord,
+  ConversationThread,
   EngineeringComponent,
+  OfflineQueueItem,
+  PreviewConfigState,
   ProjectRecord,
   SystemConnectionRecord,
   VerificationSuiteRecord,
@@ -832,3 +835,142 @@ export const INITIAL_ACTIVITY: ActivityEvent[] = [
     isSimulated: true,
   },
 ];
+
+export const INITIAL_PREVIEW_STATES: Record<string, PreviewConfigState> = {
+  'proj-prism-calc': {
+    projectId: 'proj-prism-calc',
+    appTitle: 'PrismPM Calculator',
+    subtitle: 'Closed .lex.tex -> Core-Wasm + HOLOVIEW preview (examples/Calculator)',
+    layoutDensity: 'comfortable',
+    showProvenanceFooter: true,
+    showMonospaceOutputs: true,
+    primaryActionLabel: 'Evaluate Expression',
+    draftBannerNote: 'Simulated browser preview of Calculator.holo surface · Does not execute real Core-Wasm binary.',
+    customWidgets: [
+      {
+        id: 'cw-calc-profile',
+        label: 'Hologram Profile',
+        kind: 'note',
+        value: 'Holo/1 (prism-stdlib)',
+      },
+    ],
+    lastUpdatedAt: '2026-11-15T08:40:00Z',
+  },
+  'proj-lexlean-mcp': {
+    projectId: 'proj-lexlean-mcp',
+    appTitle: 'LexLean MCP Gateway Surface',
+    subtitle: 'Read-only attestation lookup & host effect inspector (E1..E10)',
+    layoutDensity: 'comfortable',
+    showProvenanceFooter: true,
+    showMonospaceOutputs: true,
+    primaryActionLabel: 'Simulate lexlean_attestation',
+    draftBannerNote: 'Simulated MCP tool preview · Upstream verify.start (#11) & host (#17) remain open.',
+    customWidgets: [
+      {
+        id: 'cw-mcp-effects',
+        label: 'Declared Host Effects',
+        kind: 'metric',
+        value: 'E1..E10 (Documented)',
+      },
+    ],
+    lastUpdatedAt: '2026-11-15T08:46:00Z',
+  },
+  'proj-forge-abi': {
+    projectId: 'proj-forge-abi',
+    appTitle: 'Forge Kernel & App Core Boundary',
+    subtitle: 'Restricted local qualification scope (UNVERIFIED)',
+    layoutDensity: 'compact',
+    showProvenanceFooter: true,
+    showMonospaceOutputs: true,
+    primaryActionLabel: 'Inspect Boundary Policy',
+    draftBannerNote: 'Unverified boundary: no executable preview artifacts are synthesized in browser sandbox.',
+    customWidgets: [],
+    lastUpdatedAt: '2026-11-15T07:30:00Z',
+  },
+};
+
+export const INITIAL_CONVERSATIONS: ConversationThread[] = [
+  {
+    id: 'thread-calc-main',
+    projectId: 'proj-prism-calc',
+    title: 'Calculator Surface & Qualification Review',
+    createdAt: '2026-11-15T08:20:00Z',
+    updatedAt: '2026-11-15T08:30:00Z',
+    messages: [
+      {
+        id: 'msg-calc-1',
+        role: 'user',
+        content: 'Review the PrismPM Calculator reference build and summarize what blocks release today.',
+        timestamp: '2026-11-15T08:25:00Z',
+        isSimulated: false,
+      },
+      {
+        id: 'msg-calc-2',
+        role: 'assistant',
+        content:
+          'Simulated draft guidance (LM Studio NOT CONNECTED): PrismPM documents the closed `.lex.tex` pipeline producing a Cargo crate, Core-Wasm guest, HOLOVIEW, and `Calculator.holo`. However, `RELEASE-STATUS.md` confirms `v0.4.0` is not an accepted production SDK (`PP2011` Browser profile closed), Forge Kernel ABI is `NOT VERIFIED`, and human Release Authorization remains `DEFERRED`. You can click any element in the Live Preview panel to propose a draft UI change or switch to Verify & Release to inspect the exact blockers.',
+        timestamp: '2026-11-15T08:30:00Z',
+        suggestedWorkflowAction: {
+          label: 'Review Verification & Release Holds',
+          targetMode: 'verify',
+        },
+        isSimulated: true,
+      },
+    ],
+  },
+  {
+    id: 'thread-mcp-main',
+    projectId: 'proj-lexlean-mcp',
+    title: 'MCP Attestation & Windmill Bridge',
+    createdAt: '2026-11-15T08:35:00Z',
+    updatedAt: '2026-11-15T08:46:00Z',
+    messages: [
+      {
+        id: 'msg-mcp-1',
+        role: 'assistant',
+        content:
+          'Simulated workspace context ready for `LexLean MCP Gateway Host Model`. Click any preview card on the right (such as the Attestation Lookup panel) to reference it in chat, or switch to Build to step through the simulated LexLean workflow.',
+        timestamp: '2026-11-15T08:46:00Z',
+        suggestedWorkflowAction: {
+          label: 'Inspect Build & Artifacts',
+          targetMode: 'build',
+        },
+        isSimulated: true,
+      },
+    ],
+  },
+  {
+    id: 'thread-forge-main',
+    projectId: 'proj-forge-abi',
+    title: 'Boundary & Acceptance Audit',
+    createdAt: '2026-11-15T07:30:00Z',
+    updatedAt: '2026-11-15T07:30:00Z',
+    messages: [
+      {
+        id: 'msg-forge-1',
+        role: 'assistant',
+        content:
+          'This project tracks `Forge Kernel ABI & Acceptance`, whose authoritative local paths are unestablished in public repositories (`UNVERIFIED`). Draft proposals in this workspace cannot synthesize or alter Forge Kernel verification results.',
+        timestamp: '2026-11-15T07:30:00Z',
+        suggestedWorkflowAction: {
+          label: 'Inspect Verification Status',
+          targetMode: 'verify',
+        },
+        isSimulated: true,
+      },
+    ],
+  },
+];
+
+export const INITIAL_OFFLINE_QUEUE: OfflineQueueItem[] = [
+  {
+    id: 'oq-seed-01',
+    projectId: 'proj-prism-calc',
+    kind: 'VERIFICATION_REQUEST',
+    label: 'Run local `just vv` twice consecutively on Mac Studio',
+    targetEndpoint: 'http://127.0.0.1:8080/api/w/uor-offline-foundry/jobs/run/f/f/uor_foundry/prismpm_closed_model_delivery',
+    createdAt: '2026-11-15T08:40:00Z',
+    status: 'QUEUED_LOCAL',
+  },
+];
+

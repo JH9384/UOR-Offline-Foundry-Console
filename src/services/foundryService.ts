@@ -12,7 +12,12 @@ import {
   AiAdvisoryEntry,
   ApprovalDecisionRecord,
   ArtifactProvenanceRecord,
+  ConversationMessage,
+  DraftChangeProposal,
   EngineeringIntakePayload,
+  OfflineQueueItem,
+  PreviewConfigState,
+  PreviewElementRef,
   ProjectRecord,
   VerificationSuiteRecord,
   WorkflowRun,
@@ -422,6 +427,238 @@ export class FoundryService {
       targetRuntimeNote: 'Simulated response in Google AI Studio. Future runtime: LM Studio via Windmill (uor-offline-foundry).',
     };
   }
+
+  buildPreviewStateForProject(project: ProjectRecord): PreviewConfigState {
+    const component = ENGINEERING_COMPONENTS.find((c) => c.id === project.componentId);
+    return {
+      projectId: project.id,
+      appTitle: project.name,
+      subtitle: `${component?.name ?? project.componentId} · ${project.sourceRevision}`,
+      layoutDensity: 'comfortable',
+      showProvenanceFooter: true,
+      showMonospaceOutputs: true,
+      primaryActionLabel: 'Run Simulated Action',
+      draftBannerNote: `Synthetic preview for ${project.productFamily} family · Not executed against live Windmill.`,
+      customWidgets: [
+        {
+          id: `cw-${project.id}-rev`,
+          label: 'Source Revision',
+          kind: 'note',
+          value: project.sourceRevision,
+        },
+      ],
+      lastUpdatedAt: project.updatedAt,
+    };
+  }
+
+  applyDraftProposalToPreview(
+    current: PreviewConfigState,
+    proposal: DraftChangeProposal
+  ): PreviewConfigState {
+    const now = new Date().toISOString();
+    const updatedWidgets = proposal.addWidget
+      ? [...current.customWidgets.filter((w) => w.id !== proposal.addWidget?.id), proposal.addWidget]
+      : current.customWidgets;
+
+    return {
+      ...current,
+      ...proposal.patch,
+      customWidgets: updatedWidgets,
+      lastUpdatedAt: now,
+    };
+  }
+
+  processConversationTurn(params: {
+    prompt: string;
+    project: ProjectRecord;
+    preview: PreviewConfigState;
+    verifications: VerificationSuiteRecord[];
+    referencedElement?: PreviewElementRef;
+  }): {
+    userMessage: ConversationMessage;
+    assistantMessage: ConversationMessage;
+    queuedItem?: OfflineQueueItem;
+  } {
+    const now = new Date().toISOString();
+    const trimmed = params.prompt.trim();
+    const lower = trimmed.toLowerCase();
+    const component = ENGINEERING_COMPONENTS.find((c) => c.id === params.project.componentId);
+    const projectVerifications = params.verifications.filter(
+      (v) => v.projectId === params.project.id
+    );
+
+    const userMessage: ConversationMessage = {
+      id: `msg-u-${Date.now()}`,
+      role: 'user',
+      content: trimmed,
+      timestamp: now,
+      referencedElement: params.referencedElement,
+      isSimulated: false,
+    };
+
+    // 1. Guardrail: if user asks AI to approve/verify/pass/release
+    if (
+      /\b(approve|authorize release|sign off|mark pass|mark verified|bypass)\b/.test(lower)
+    ) {
+      return {
+        userMessage,
+        assistantMessage: {
+          id: `msg-a-${Date.now() + 1}`,
+          role: 'assistant',
+          content:
+            `Simulated LM Studio response (NOT CONNECTED): I cannot establish verification evidence, alter authoritative suite results, or authorize a release for "${params.project.name}". Currently ${projectVerifications.filter((v) => v.status !== 'PASS').length} verification gates remain non-passing/unverified and Release Governance requires human review.`,
+          timestamp: now,
+          suggestedWorkflowAction: {
+            label: 'Open Verify & Release',
+            targetMode: 'verify',
+          },
+          isSimulated: true,
+        },
+      };
+    }
+
+    // 2. If user references a preview element or asks for a UI/layout/preview change
+    if (
+      params.referencedElement ||
+      /\b(change|update|add|rename|compact|comfortable|monospace|footer|button|title|header|widget|preview|simplify)\b/.test(
+        lower
+      )
+    ) {
+      const target = params.referencedElement;
+      const patch: DraftChangeProposal['patch'] = {};
+      let addWidget: DraftChangeProposal['addWidget'] | undefined;
+      let summary = 'Propose draft preview update';
+
+      if (lower.includes('compact')) {
+        patch.layoutDensity = 'compact';
+        summary = 'Switch preview layout density to compact';
+      } else if (lower.includes('comfortable') || lower.includes('spacious')) {
+        patch.layoutDensity = 'comfortable';
+        summary = 'Switch preview layout density to comfortable';
+      } else if (target?.elementId === 'preview-primary-action' || lower.includes('button')) {
+        const quoted = trimmed.match(/["']([^"']{2,36})["']/)?.[1];
+        patch.primaryActionLabel = quoted ?? 'Simulate Verified Step';
+        summary = `Update primary action label to "${patch.primaryActionLabel}"`;
+      } else if (target?.elementId === 'preview-header' || lower.includes('title') || lower.includes('header')) {
+        const quoted = trimmed.match(/["']([^"']{3,48})["']/)?.[1];
+        if (quoted) {
+          patch.appTitle = quoted;
+          summary = `Rename preview header title to "${quoted}"`;
+        } else {
+          patch.subtitle = `${params.project.productFamily} draft · ${params.project.sourceRevision}`;
+          summary = 'Refine preview header subtitle with product family and revision';
+        }
+      } else if (target?.elementId === 'preview-footer' || lower.includes('footer')) {
+        patch.showProvenanceFooter = !params.preview.showProvenanceFooter;
+        summary = patch.showProvenanceFooter
+          ? 'Show provenance summary strip in preview footer'
+          : 'Hide provenance summary strip in preview footer';
+      } else if (lower.includes('monospace') || target?.elementId === 'preview-output') {
+        patch.showMonospaceOutputs = true;
+        addWidget = {
+          id: `cw-draft-${Date.now()}`,
+          label: target ? `${target.label} Note` : 'Draft Output Note',
+          kind: 'note',
+          value: trimmed.slice(0, 64),
+        };
+        summary = `Annotate ${target?.label ?? 'output panel'} with monospace draft note`;
+      } else {
+        addWidget = {
+          id: `cw-draft-${Date.now()}`,
+          label: target ? `Draft (${target.label})` : 'Draft Extension',
+          kind: 'metric',
+          value: trimmed.slice(0, 56),
+        };
+        summary = `Add draft specification block${target ? ` for ${target.label}` : ''}`;
+      }
+
+      const proposal: DraftChangeProposal = {
+        id: `draft-${Date.now()}`,
+        summary,
+        targetElement: target,
+        patch,
+        addWidget,
+        applied: false,
+        isSimulated: true,
+        authorityNote:
+          'Draft UI proposal only. Does not modify authoritative .lex.tex sources, verification records, or release state.',
+      };
+
+      const queuedItem: OfflineQueueItem = {
+        id: `oq-${Date.now()}`,
+        projectId: params.project.id,
+        kind: 'DRAFT_SYNC',
+        label: `Draft proposal: ${summary}`,
+        targetEndpoint: `http://127.0.0.1:8080/api/w/uor-offline-foundry/resources/drafts/${params.project.id}`,
+        createdAt: now,
+        status: 'QUEUED_LOCAL',
+      };
+
+      return {
+        userMessage,
+        assistantMessage: {
+          id: `msg-a-${Date.now() + 1}`,
+          role: 'assistant',
+          content: `Simulated draft proposal prepared${target ? ` for "${target.label}"` : ''}. Apply it to inspect the updated Live Preview, and note that this draft has been queued locally for optional future sync to Mac Studio.`,
+          timestamp: now,
+          draftProposal: proposal,
+          suggestedWorkflowAction: {
+            label: 'Inspect in Preview',
+            targetMode: 'preview',
+          },
+          isSimulated: true,
+        },
+        queuedItem,
+      };
+    }
+
+    // 3. If user asks to run/build/queue workflow
+    if (/\b(build|run|workflow|execute|queue|windmill|compile)\b/.test(lower)) {
+      const queuedItem: OfflineQueueItem = {
+        id: `oq-${Date.now()}`,
+        projectId: params.project.id,
+        kind: 'WORKFLOW_DISPATCH',
+        label: `Queue ${component?.name ?? params.project.componentId} workflow step`,
+        targetEndpoint: `http://127.0.0.1:8080/api/w/uor-offline-foundry/jobs/run/f/${params.project.workflowId}`,
+        createdAt: now,
+        status: 'QUEUED_LOCAL',
+      };
+
+      return {
+        userMessage,
+        assistantMessage: {
+          id: `msg-a-${Date.now() + 1}`,
+          role: 'assistant',
+          content: `Simulated response (Windmill 127.0.0.1:8080 NOT CONNECTED): I queued a local offline action for "${params.project.name}" targeting workspace "uor-offline-foundry". You can step through the simulated 8-stage pipeline in Build mode right now without any live server connection.`,
+          timestamp: now,
+          suggestedWorkflowAction: {
+            label: 'Open Build & Workflows',
+            targetMode: 'build',
+          },
+          isSimulated: true,
+        },
+        queuedItem,
+      };
+    }
+
+    // 4. Default contextual engineering interpretation
+    const blockedCount = projectVerifications.filter((v) => v.status !== 'PASS').length;
+    return {
+      userMessage,
+      assistantMessage: {
+        id: `msg-a-${Date.now() + 1}`,
+        role: 'assistant',
+        content: `Simulated advisory for "${params.project.name}" (${component?.name ?? params.project.componentId}): Current lifecycle is ${params.project.lifecycleStatus} with ${blockedCount} verification gates unverified/incomplete. Click "Select Element" in the Live Preview panel to target a specific UI region for a draft change, or switch to Build / Verify & Release to inspect artifacts and governance holds.`,
+        timestamp: now,
+        suggestedWorkflowAction: {
+          label: 'Review Verify & Release',
+          targetMode: 'verify',
+        },
+        isSimulated: true,
+      },
+    };
+  }
 }
 
 export const foundryService = new FoundryService();
+

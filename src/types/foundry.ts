@@ -278,3 +278,77 @@ export interface ActivityEvent {
   summary: string;
   isSimulated: boolean;
 }
+
+export type WorkspaceMode = 'chat' | 'preview' | 'build' | 'verify';
+
+export interface PreviewElementRef {
+  elementId: string;
+  label: string;
+  region: string;
+  currentSummary: string;
+}
+
+export interface PreviewCustomWidget {
+  id: string;
+  label: string;
+  kind: 'metric' | 'action' | 'note';
+  value: string;
+}
+
+export interface PreviewConfigState {
+  projectId: string;
+  appTitle: string;
+  subtitle: string;
+  layoutDensity: 'comfortable' | 'compact';
+  showProvenanceFooter: boolean;
+  showMonospaceOutputs: boolean;
+  primaryActionLabel: string;
+  draftBannerNote?: string;
+  customWidgets: PreviewCustomWidget[];
+  lastUpdatedAt: string;
+}
+
+export interface DraftChangeProposal {
+  id: string;
+  summary: string;
+  targetElement?: PreviewElementRef;
+  patch: Partial<Omit<PreviewConfigState, 'projectId' | 'lastUpdatedAt'>>;
+  addWidget?: PreviewCustomWidget;
+  applied: boolean;
+  isSimulated: true;
+  authorityNote: string;
+}
+
+export interface ConversationMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: string;
+  referencedElement?: PreviewElementRef;
+  draftProposal?: DraftChangeProposal;
+  suggestedWorkflowAction?: {
+    label: string;
+    targetMode: WorkspaceMode;
+  };
+  isSimulated: boolean;
+}
+
+export interface ConversationThread {
+  id: string;
+  projectId: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messages: ConversationMessage[];
+}
+
+export interface OfflineQueueItem {
+  id: string;
+  projectId: string;
+  kind: 'WORKFLOW_DISPATCH' | 'DRAFT_SYNC' | 'VERIFICATION_REQUEST';
+  label: string;
+  targetEndpoint: string;
+  createdAt: string;
+  status: 'QUEUED_LOCAL' | 'SIMULATED_LOCAL';
+}
+

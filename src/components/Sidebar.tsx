@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   Activity,
+  ArrowLeft,
   BookOpen,
   Bot,
   FolderKanban,
@@ -39,6 +40,7 @@ interface SidebarProps {
   mobileOpen: boolean;
   onCloseMobile: () => void;
   blockedReleaseCount: number;
+  onReturnToStudio?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -47,6 +49,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   mobileOpen,
   onCloseMobile,
   blockedReleaseCount,
+  onReturnToStudio,
 }) => {
   const renderGroup = (group: NavItem['group'], title: string) => {
     const items = NAV_ITEMS.filter((item) => item.group === group);
@@ -116,7 +119,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 py-5">
+      <div className="flex-1 overflow-y-auto px-3 py-4">
+        {onReturnToStudio && (
+          <button
+            type="button"
+            onClick={() => {
+              onReturnToStudio();
+              onCloseMobile();
+            }}
+            className="w-full mb-5 flex items-center gap-2 px-3 py-2 text-xs font-medium text-blue-300 bg-blue-950/30 hover:bg-blue-950/50 border border-blue-500/30 rounded-md transition-colors"
+          >
+            <ArrowLeft className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+            <span>Back to Studio Workspace</span>
+          </button>
+        )}
         {renderGroup('operations', 'Operations')}
         {renderGroup('governance', 'Verification & Custody')}
         {renderGroup('infrastructure', 'Advisory & Architecture')}
