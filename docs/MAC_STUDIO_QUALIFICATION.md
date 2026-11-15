@@ -89,3 +89,28 @@ Execute the following 8 steps in strict order against `UOR-Foundation/PrismPM@6c
 - **Browser preflight vs verified release:** In-browser `.holo` checks return at most `'STRUCTURAL PREFLIGHT PASS'` (`artifactState: 'PREFLIGHT_CHECKED'`), never certifying `'VERIFIED'` or production release.
 - **Source edit invalidation (`INV-003`):** Editing `sourceRevision` after `PASS` forces prior suites to `NOT VERIFIED` (`STALE`) and blocks `APPROVED_FOR_RELEASE`.
 - **Direct binary download gate:** UI buttons for `.holo Archive Binary`, `Generated Source Archive`, `Core-Wasm + HOLOVIEW Bundle`, and `Verified Evidence Bundle` remain disabled whenever `!fileExistsOnDisk || !sha256Verified || artifactState !== 'VERIFIED'`.
+
+---
+
+## 6. Authoring-to-Production Handoff (`uor.foundry.source-package.v1`)
+
+Google AI Studio operates exclusively as an authoring, preliminary review, and simulated workflow studio. Before transferring a project to Mac Studio (`uor-offline-foundry`):
+
+1. **Review & Export Source Package**: In **Build -> Source Editor & Package**, inspect all authored `.lex.tex`, `prismpm.toml`, `lexlean.toml`, `routes.toml`, `frontier.toml`, lockfiles (`prismpm.lock`, `lexlean.lock`, `standards.lock`, `Cargo.lock`), facets, views, and acceptance vectors.
+2. **Explicit Classification & Filename Safety**: Confirm operator review of files, classification (`UNVERIFIED_AUTHORED_SOURCE_PACKAGE`, `isHoloArchive: false`), and destination (`MAC_STUDIO_UOR_OFFLINE_FOUNDRY` or `AIR_GAPPED_PHYSICAL_MEDIA`). The exported bundle is saved strictly as `<slug>-source-package.uor-src.json` (never `.holo`).
+3. **Boundary Scrubbing & Integrity Hashing**: Every exported file is path-validated (no traversal, no `/Users/` paths, no Bearer/API secrets, no `.holo`/`.wasm` binaries) and sealed with per-file SHA-256 `inputHashes` plus top-level `packageDigestSha256`.
+4. **Local Mac Studio Verification**: On Mac Studio, verify `packageDigestSha256` and per-file SHA-256 digests, unpack into an isolated project workspace, verify lockfile closure, and run the ordered 8-step qualification procedure in Section 4.
+
+### Capabilities Requiring Real Mac Studio Qualification
+
+| Capability | Google AI Studio (Browser) | Mac Studio (`uor-offline-foundry`) |
+| --- | --- | --- |
+| `.lex.tex`, `.toml`, lockfile, facet & view authoring | **Supported** (preliminary browser checks only) | Authoritative source storage & Git pinning |
+| `lexlean fmt --check`, `lexlean check`, `lexlean build` | **Simulated only** (never substitutes for Lean) | **Required local qualification** (`LexLean 0.4.0`) |
+| `lexlean verify --all` + `#print axioms` audit | **Unavailable (`NOT VERIFIED`)** | **Required local qualification** (`Lean 4.32.1` + `leanchecker`) |
+| `prismpm check`, `prismpm build --locked`, `.holo` v4 emit | **Simulated only** | **Required local qualification** (`PrismPM v0.5.0`) |
+| `prismpm verify` (`just vv` 15-gate suite) | **Unavailable (`NOT VERIFIED`)** | **Required local qualification** |
+| `uorust project` + `cargo build --locked --offline` | **Disabled in browser** (route preview only) | **Required local qualification** (`afflom/UORust` + vendored crates) |
+| `hologram inspect / verify / holo plan / run` | Structural header preflight only (`ArrayBuffer`) | **Required local qualification** (`Hologram Live v1.0.0`) |
+| Independent Forge Kernel & Browser PP2011 suites | **Unavailable (`NOT VERIFIED`)** | **Required local qualification** & human sign-off |
+

@@ -54,6 +54,7 @@ interface LivePreviewPanelProps {
   onSelectElement: (element: PreviewElementRef | null) => void;
   onSwitchMode: (mode: WorkspaceMode) => void;
   onOpenSourceCompliance?: () => void;
+  onOpenSourceAuthoring?: () => void;
 }
 
 const PREVIEW_KINDS: Array<{ id: ArtifactPreviewKind; label: string }> = [
@@ -84,6 +85,7 @@ export const LivePreviewPanel: React.FC<LivePreviewPanelProps> = ({
   onSelectElement,
   onSwitchMode,
   onOpenSourceCompliance,
+  onOpenSourceAuthoring,
 }) => {
   const [previewKind, setPreviewKind] = useState<ArtifactPreviewKind>('ui-build');
   const [inspectMode, setInspectMode] = useState(false);
@@ -746,6 +748,19 @@ export const LivePreviewPanel: React.FC<LivePreviewPanelProps> = ({
                 >
                   <span className="font-mono">{project.sourceRevision}</span>
                   <div className="flex items-center gap-3">
+                    {onOpenSourceAuthoring && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          if (inspectMode) return;
+                          e.stopPropagation();
+                          onOpenSourceAuthoring();
+                        }}
+                        className="text-sky-300 hover:underline"
+                      >
+                        Edit Source &rarr;
+                      </button>
+                    )}
                     {onOpenSourceCompliance && (
                       <button
                         type="button"

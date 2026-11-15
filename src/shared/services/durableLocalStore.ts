@@ -166,6 +166,8 @@ const ALLOWED_OPERATION_KINDS = new Set<DurableOperation['kind']>([
   'DRAFT_APPROVAL',
   'WORKFLOW_INTENT_STAGED',
   'AIR_GAPPED_BUNDLE_EXPORT',
+  'SOURCE_DRAFT_EDIT',
+  'SOURCE_PACKAGE_EXPORT',
 ]);
 
 const ALLOWED_SYNC_STATES = new Set<DurableOperation['syncState']>([

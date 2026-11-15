@@ -16,6 +16,7 @@ import {
   WorkflowRun,
   WorkflowStageTemplate,
 } from '../types/foundry';
+import { buildAuthoringWorkspaceForJourney } from '../services/sourceAuthoringService';
 
 export const ENGINEERING_COMPONENTS: EngineeringComponent[] = [
   {
@@ -309,6 +310,13 @@ export const INITIAL_PROJECTS: ProjectRecord[] = [
         role: 'Content-addressed SHA-256 artifact commitment semantics',
       },
     ],
+    authoringWorkspace: buildAuthoringWorkspaceForJourney({
+      journeyType: 'PRISM_APPLICATION',
+      inputMode: 'NATIVE_PRISM',
+      projectName: 'PrismPM Calculator Reference',
+      purpose: 'Primary reference closed .lex.tex application build producing model.prism.json, Lean/LCNF roots, Cargo crate, import-free Core-Wasm, HOLOVIEW, and Calculator.holo v4.',
+      sourceRevision: 'prismpm/main@6c876017',
+    }),
   },
   {
     id: 'proj-devrel-product',
@@ -363,6 +371,14 @@ export const INITIAL_PROJECTS: ProjectRecord[] = [
         role: 'Full SHA-256 package commitment',
       },
     ],
+    authoringWorkspace: buildAuthoringWorkspaceForJourney({
+      journeyType: 'PRISM_APPLICATION',
+      inputMode: 'GUIDED_PRODUCT',
+      projectName: 'Prism-DevRel Guided Product Target',
+      purpose: 'Guided Prism-DevRel application synthesized through facet coverage matrix and human-reviewed draft .lex.tex specification before formal PrismPM toolchain compilation.',
+      sourceRevision: 'prism-devrel/main@8af99e96',
+      guidedPrompt: 'Create a deterministic UOR subject catalog explorer covering all seven Prism facets with Diataxis guidance.',
+    }),
   },
   {
     id: 'proj-uorust-cargo',
@@ -411,6 +427,13 @@ export const INITIAL_PROJECTS: ProjectRecord[] = [
         role: 'SHA-256 projection commitment',
       },
     ],
+    authoringWorkspace: buildAuthoringWorkspaceForJourney({
+      journeyType: 'RUST_WORKSPACE',
+      inputMode: 'EXISTING_RUST',
+      projectName: 'UORust Cargo Workspace Projection Fixture',
+      purpose: 'Translate a pinned Cargo workspace into Prism/LexLean spans via model/routes.toml while recording typed UorustError refusals and keeping Cargo compilation separate from Prism verification.',
+      sourceRevision: 'UORust/main@5868afe3',
+    }),
   },
   {
     id: 'proj-lexlean-mcp',
@@ -451,6 +474,13 @@ export const INITIAL_PROJECTS: ProjectRecord[] = [
         role: 'Untruncated SHA-256 commitment & pure replay checkpoint rules',
       },
     ],
+    authoringWorkspace: buildAuthoringWorkspaceForJourney({
+      journeyType: 'FORMAL_RESEARCH',
+      inputMode: 'NATIVE_PRISM',
+      projectName: 'LexLean MCP Gateway Host Model',
+      purpose: 'Validate E1..E10 host effect declarations, read-only attestation lookup, and draft path admission rules.',
+      sourceRevision: 'lexlean-mcp/main@e0b74b8',
+    }),
   },
   {
     id: 'proj-forge-abi',
@@ -485,6 +515,13 @@ export const INITIAL_PROJECTS: ProjectRecord[] = [
         role: 'Custody receipt & boundary accountability reference',
       },
     ],
+    authoringWorkspace: buildAuthoringWorkspaceForJourney({
+      journeyType: 'FORMAL_RESEARCH',
+      inputMode: 'NATIVE_PRISM',
+      projectName: 'Forge Kernel & App Core Boundary Audit',
+      purpose: 'Track independent qualification readiness for Forge Kernel ABI and Hologram Forge Application Core.',
+      sourceRevision: 'foundry/main@760eaac2',
+    }),
   },
 ];
 

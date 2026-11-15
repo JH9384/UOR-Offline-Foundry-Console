@@ -50,6 +50,7 @@ interface ChatPanelProps {
   onRejectDraftProposal: (messageId: string, proposalId: string) => void;
   onSwitchMode: (mode: WorkspaceMode) => void;
   onOpenNewProject: () => void;
+  onOpenSourceAuthoring?: () => void;
 }
 
 export const ChatPanel: React.FC<ChatPanelProps> = ({
@@ -76,6 +77,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   onRejectDraftProposal,
   onSwitchMode,
   onOpenNewProject,
+  onOpenSourceAuthoring,
 }) => {
   const [input, setInput] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -151,6 +153,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                   : 'Autosaved'}
             </span>
           </span>
+          {onOpenSourceAuthoring && (
+            <button
+              type="button"
+              onClick={onOpenSourceAuthoring}
+              className="px-2 py-1 text-[11px] font-medium text-sky-300 border border-sky-500/35 hover:bg-sky-950/30 rounded transition-colors whitespace-nowrap"
+            >
+              Source Editor
+            </button>
+          )}
           <StatusTag value={integrationMode} />
         </div>
       </div>

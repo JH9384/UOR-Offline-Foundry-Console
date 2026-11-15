@@ -24,8 +24,10 @@ import {
 import {
   ArtifactLifecycleBadge,
   ArtifactProvenanceRecord,
+  PrismOutputClassId,
   ProjectRecord,
 } from '../../types/foundry';
+import { ensureProjectAuthoringWorkspace } from '../../services/sourceAuthoringService';
 import { ArtifactDependencyDag } from '../ArtifactDependencyDag';
 import { StatusTag } from '../StatusTag';
 
@@ -35,6 +37,37 @@ interface ArtifactsViewProps {
   selectedProjectId: string;
   artifactBuffers?: Record<string, ArrayBuffer>;
 }
+
+type UnifiedArtifactCategory =
+  | 'all'
+  | 'source_package'
+  | 'prism_model'
+  | 'generated_lean'
+  | 'cargo_output'
+  | 'core_wasm'
+  | 'portable_view'
+  | 'hologram_archive'
+  | 'build_manifests'
+  | 'verification_evidence'
+  | 'release_decision';
+
+export const UNIFIED_ARTIFACT_CATEGORIES: Array<{
+  id: UnifiedArtifactCategory;
+  label: string;
+  outputClasses?: PrismOutputClassId[];
+}> = [
+  { id: 'all', label: 'All Categories (10)' },
+  { id: 'source_package', label: '1. Source Package (Authored Draft)' },
+  { id: 'prism_model', label: '2. Prism Model', outputClasses: ['model_prism_json', 'authoritative_lex_tex'] },
+  { id: 'generated_lean', label: '3. Generated Lean', outputClasses: ['generated_lean_proof_evidence', 'lcnf_outputs'] },
+  { id: 'cargo_output', label: '4. Cargo Output', outputClasses: ['generated_cargo_package'] },
+  { id: 'core_wasm', label: '5. Core-Wasm', outputClasses: ['core_wasm_module'] },
+  { id: 'portable_view', label: '6. Portable View', outputClasses: ['portable_view_assets'] },
+  { id: 'hologram_archive', label: '7. Hologram Archive (.holo)', outputClasses: ['physical_holo_archive'] },
+  { id: 'build_manifests', label: '8. Build Manifests', outputClasses: ['build_manifests_and_digests'] },
+  { id: 'verification_evidence', label: '9. Verification Evidence', outputClasses: ['independent_acceptance_records'] },
+  { id: 'release_decision', label: '10. Release Decision', outputClasses: ['release_decision_records'] },
+];
 
 type ArtifactStatusFilter =
   | 'all'
@@ -61,6 +94,7 @@ export const ArtifactsView: React.FC<ArtifactsViewProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [projectFilter, setProjectFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<ArtifactStatusFilter>('all');
+  const [categoryFilter, setCategoryFilter] = useState<UnifiedArtifactCategory>('all');
   const [lastExportNotice, setLastExportNotice] = useState<string | null>(null);
   const [metadataExpanded, setMetadataExpanded] = useState<boolean>(false);
   const [metadataModalOpen, setMetadataModalOpen] = useState<boolean>(false);
@@ -89,7 +123,13 @@ export const ArtifactsView: React.FC<ArtifactsViewProps> = ({
       art.releaseReadiness === statusFilter ||
       art.digestMode === statusFilter;
 
-    return matchesSearch && matchesProject && matchesStatus;
+    const selectedCategorySpec = UNIFIED_ARTIFACT_CATEGORIES.find((c) => c.id === categoryFilter);
+    const matchesCategory =
+      categoryFilter === 'all' ||
+      categoryFilter === 'source_package' ||
+      (selectedCategorySpec?.outputClasses?.includes(art.outputClass) ?? true);
+
+    return matchesSearch && matchesProject && matchesStatus && matchesCategory;
   });
 
   const activeArtifact =
@@ -346,6 +386,25 @@ export const ArtifactsView: React.FC<ArtifactsViewProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            <label htmlFor="artifact-category-filter" className="text-xs text-slate-400 whitespace-nowrap">
+              Category:
+            </label>
+            <select
+              id="artifact-category-filter"
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value as UnifiedArtifactCategory)}
+              data-testid="artifact-category-filter"
+              className="px-3 py-1.5 text-xs bg-[#0B0F17] border border-slate-700 rounded-md text-slate-200 focus:outline-none focus:border-blue-500"
+            >
+              {UNIFIED_ARTIFACT_CATEGORIES.map((cat) => (
+                <option key={cat.id} value={cat.id}>
+                  {cat.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center gap-2">
             <label htmlFor="artifact-status-filter" className="text-xs text-slate-400 whitespace-nowrap">
               Status:
             </label>
@@ -368,6 +427,36 @@ export const ArtifactsView: React.FC<ArtifactsViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Category 1: Authored Source Package Inspector */}
+      {(() => {
+        const focusProj =
+          projects.find((p) => p.id === (projectFilter !== 'all' ? projectFilter : selectedProjectId)) ??
+          projects[0];
+        if (!focusProj || (categoryFilter !== 'all' && categoryFilter !== 'source_package')) return null;
+        const authored = ensureProjectAuthoringWorkspace(focusProj);
+        return (
+          <section
+            className="bg-[#111827] border border-sky-500/35 rounded-lg p-4 space-y-2 text-xs"
+            data-testid="artifacts-source-package-summary"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="font-medium text-sky-200">
+                1. Source Package (Authored Inputs · {focusProj.name})
+              </div>
+              <span className="px-2 py-0.5 text-[10px] font-mono rounded border border-amber-500/40 bg-amber-950/30 text-amber-200">
+                UNVERIFIED_AUTHORED_SOURCE_PACKAGE · NOT .holo
+              </span>
+            </div>
+            <div className="text-[11px] font-mono text-slate-300">
+              Files ({authored.files.length}): {authored.files.map((f) => f.path).join(', ')}
+            </div>
+            <div className="text-[11px] text-slate-400">
+              Review Status: <span className="font-mono text-slate-200">{authored.reviewStatus}</span> · Expected Build Classes: <span className="font-mono text-slate-300">{authored.expectedOutputClasses.join(', ')}</span>
+            </div>
+          </section>
+        );
+      })()}
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
         <section className="xl:col-span-5 bg-[#111827] border border-slate-800/90 rounded-lg overflow-hidden">

@@ -29,6 +29,7 @@ import {
   artifactsService,
   BuildVerificationHoloStageResult,
 } from './artifactsService';
+import { buildAuthoringWorkspaceForJourney } from './sourceAuthoringService';
 
 export const PROJECT_TEMPLATES: ProjectTemplateSpec[] = [
   {
@@ -340,6 +341,22 @@ export class FoundryService {
           ]
         : undefined;
 
+    const authoringJourneyType =
+      inferredInputMode === 'EXISTING_RUST'
+        ? 'RUST_WORKSPACE'
+        : inferredInputMode === 'GUIDED_PRODUCT' || payload.productFamily === 'application'
+          ? 'PRISM_APPLICATION'
+          : 'FORMAL_RESEARCH';
+
+    const authoringWorkspace = buildAuthoringWorkspaceForJourney({
+      journeyType: authoringJourneyType,
+      inputMode: inferredInputMode,
+      projectName: payload.projectName.trim(),
+      purpose: payload.purpose.trim(),
+      sourceRevision: payload.sourceRevision.trim(),
+      guidedPrompt: payload.guidedPrompt,
+    });
+
     const project: ProjectRecord = {
       id: projectId,
       name: payload.projectName.trim(),
@@ -362,6 +379,7 @@ export class FoundryService {
       lockfilesDeclared: parsedDeclaredLockfiles,
       guidedProductDraft,
       uorustRefusals,
+      authoringWorkspace,
     };
 
     const dispatchResult = this.simAdapter.dispatchWorkflowSimulation(projectId, payload, workflow);
@@ -824,6 +842,20 @@ export class FoundryService {
       lastOpenedAt: now,
       archived: false,
       isSyntheticDemo: true,
+      authoringWorkspace: source.authoringWorkspace
+        ? {
+            ...source.authoringWorkspace,
+            files: source.authoringWorkspace.files.map((f) => ({ ...f })),
+            revisionHistory: [...source.authoringWorkspace.revisionHistory],
+            checkpoints: source.authoringWorkspace.checkpoints.map((cp) => ({
+              ...cp,
+              filesSnapshot: cp.filesSnapshot.map((f) => ({ ...f })),
+            })),
+            pendingAiProposals: [],
+            reviewStatus: 'DRAFT_UNREVIEWED',
+            lastReviewedAt: undefined,
+          }
+        : undefined,
       releaseBlockedReasons: [
         'Duplicated local demo workspace; independent verification and human release authorization must be evaluated separately.',
         ...source.releaseBlockedReasons.filter(

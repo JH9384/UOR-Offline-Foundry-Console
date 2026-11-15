@@ -21,15 +21,21 @@ import { evaluateProjectOfflineClosure } from '../../services/holoArchiveValidat
 import {
   ArtifactProvenanceRecord,
   DurableOperation,
+  FoundrySourcePackageManifest,
   IntegrationMode,
   NavigationSectionId,
+  ProjectAuthoringWorkspace,
   ProjectRecord,
+  SourcePackageDestination,
   WindmillJobRecord,
   WorkflowRun,
   WorkflowStageId,
 } from '../../types/foundry';
 import { StatusTag } from '../StatusTag';
 import { ArtifactsView } from '../views/ArtifactsView';
+import { SourceAuthoringPanel } from './SourceAuthoringPanel';
+
+export type BuildSubTab = 'pipeline' | 'authoring' | 'execution' | 'artifacts';
 
 interface BuildModePanelProps {
   project: ProjectRecord;
@@ -39,10 +45,46 @@ interface BuildModePanelProps {
   jobRecords: WindmillJobRecord[];
   artifacts: ArtifactProvenanceRecord[];
   operations: DurableOperation[];
+  activeSubTab?: BuildSubTab;
+  onChangeSubTab?: (tab: BuildSubTab) => void;
   onAdvanceSimulation: (runId: string) => void;
   onStageWorkflowIntent: (project: ProjectRecord, idempotencyKey: string, run?: WorkflowRun) => boolean;
   onOpenIntake: () => void;
   onOpenAdvancedSection: (section: NavigationSectionId) => void;
+  onSaveSourceFile: (params: {
+    projectId: string;
+    filePath: string;
+    newContent: string;
+    revisionNote?: string;
+  }) => void;
+  onAddSourceFile: (params: {
+    projectId: string;
+    filePath: string;
+    content: string;
+  }) => { ok: boolean; error?: string };
+  onCreateSourceCheckpoint: (projectId: string, name: string) => Promise<void>;
+  onRestoreSourceCheckpoint: (projectId: string, checkpointId: string) => void;
+  onRequestAiSourceProposal: (params: {
+    projectId: string;
+    filePath: string;
+    instruction: string;
+  }) => void;
+  onDecideAiSourceProposal: (params: {
+    projectId: string;
+    proposalId: string;
+    decision: 'APPROVED' | 'REJECTED';
+  }) => void;
+  onExportSourcePackage: (params: {
+    projectId: string;
+    reviewConfirmed: boolean;
+    reviewSummary: string;
+    targetDestination: SourcePackageDestination;
+  }) => Promise<{ ok: boolean; filename?: string; manifest?: FoundrySourcePackageManifest; error?: string }>;
+  onImportVerifiedSourcePackage: (params: {
+    projectId: string;
+    manifest: FoundrySourcePackageManifest;
+    workspace: ProjectAuthoringWorkspace;
+  }) => void;
 }
 
 function formatDuration(ms?: number): string {
@@ -58,12 +100,27 @@ export const BuildModePanel: React.FC<BuildModePanelProps> = ({
   runs,
   jobRecords,
   artifacts,
+  activeSubTab,
+  onChangeSubTab,
   onAdvanceSimulation,
   onStageWorkflowIntent,
   onOpenIntake,
   onOpenAdvancedSection,
+  onSaveSourceFile,
+  onAddSourceFile,
+  onCreateSourceCheckpoint,
+  onRestoreSourceCheckpoint,
+  onRequestAiSourceProposal,
+  onDecideAiSourceProposal,
+  onExportSourcePackage,
+  onImportVerifiedSourcePackage,
 }) => {
-  const [subTab, setSubTab] = useState<'pipeline' | 'execution' | 'artifacts'>('pipeline');
+  const [internalSubTab, setInternalSubTab] = useState<BuildSubTab>('pipeline');
+  const subTab = activeSubTab ?? internalSubTab;
+  const setSubTab = (tab: BuildSubTab) => {
+    setInternalSubTab(tab);
+    onChangeSubTab?.(tab);
+  };
   const [dispatchNotice, setDispatchNotice] = useState<string | null>(null);
   const [lastIdempotencyKey] = useState<string>(
     () => `idem-${project.id}-${project.sourceRevision.replace(/[^a-zA-Z0-9]/g, '')}`
@@ -130,6 +187,18 @@ export const BuildModePanel: React.FC<BuildModePanelProps> = ({
             }`}
           >
             Simulated Pipeline
+          </button>
+          <button
+            type="button"
+            onClick={() => setSubTab('authoring')}
+            data-testid="build-subtab-authoring"
+            className={`px-3 py-1 text-xs font-medium rounded transition-colors whitespace-nowrap ${
+              subTab === 'authoring'
+                ? 'bg-slate-800 text-white'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Source Editor &amp; Package ({project.authoringWorkspace?.files.length ?? 0})
           </button>
           <button
             type="button"
@@ -470,6 +539,20 @@ export const BuildModePanel: React.FC<BuildModePanelProps> = ({
             </>
           )}
         </section>
+      )}
+
+      {subTab === 'authoring' && (
+        <SourceAuthoringPanel
+          project={project}
+          onSaveSourceFile={onSaveSourceFile}
+          onAddSourceFile={onAddSourceFile}
+          onCreateSourceCheckpoint={onCreateSourceCheckpoint}
+          onRestoreSourceCheckpoint={onRestoreSourceCheckpoint}
+          onRequestAiSourceProposal={onRequestAiSourceProposal}
+          onDecideAiSourceProposal={onDecideAiSourceProposal}
+          onExportSourcePackage={onExportSourcePackage}
+          onImportVerifiedSourcePackage={onImportVerifiedSourcePackage}
+        />
       )}
 
       {subTab === 'execution' && (

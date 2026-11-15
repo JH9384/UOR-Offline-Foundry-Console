@@ -379,6 +379,7 @@ export interface ProjectRecord {
   lockfilesDeclared?: string[];
   guidedProductDraft?: GuidedProductDraftSpec;
   uorustRefusals?: UorustTypedRefusal[];
+  authoringWorkspace?: ProjectAuthoringWorkspace;
 }
 
 export interface EngineeringIntakePayload {
@@ -838,7 +839,9 @@ export interface DurableOperation {
     | 'CONVERSATION_TURN'
     | 'DRAFT_APPROVAL'
     | 'WORKFLOW_INTENT_STAGED'
-    | 'AIR_GAPPED_BUNDLE_EXPORT';
+    | 'AIR_GAPPED_BUNDLE_EXPORT'
+    | 'SOURCE_DRAFT_EDIT'
+    | 'SOURCE_PACKAGE_EXPORT';
   label: string;
   revision: number;
   timestamp: string;
@@ -947,4 +950,132 @@ export interface WorkspaceBackupBundle {
   warning: string;
   snapshot: Record<string, unknown>;
 }
+
+export type AuthoringFileKind =
+  | 'lex_tex'
+  | 'prismpm_toml'
+  | 'lexlean_toml'
+  | 'lockfile'
+  | 'routes_toml'
+  | 'facets_json'
+  | 'views_json'
+  | 'acceptance_json'
+  | 'cargo_toml'
+  | 'frontier_toml';
+
+export type AuthoringSyntaxLanguage = 'lextex' | 'toml' | 'json' | 'rust';
+
+export interface AuthoringSourceFile {
+  path: string;
+  kind: AuthoringFileKind;
+  language: AuthoringSyntaxLanguage;
+  content: string;
+  sha256?: string;
+  lastEditedAt: string;
+  lastEditedBy: string;
+  revisionNote?: string;
+  isAuthoritativeInput: boolean;
+}
+
+export interface PreliminarySourceDiagnostic {
+  id: string;
+  filePath: string;
+  line: number;
+  severity: 'error' | 'warning' | 'info';
+  code: string;
+  message: string;
+  isPreliminaryBrowserCheck: true;
+}
+
+export interface SourceRevisionEntry {
+  revisionId: string;
+  sourceRevision: string;
+  summary: string;
+  timestamp: string;
+  author: string;
+  changedFiles: string[];
+  invalidatedVerification: boolean;
+}
+
+export interface SourceFileCheckpoint {
+  id: string;
+  projectId: string;
+  name: string;
+  createdAt: string;
+  sourceRevision: string;
+  filesSnapshot: AuthoringSourceFile[];
+  stateSha256: string;
+}
+
+export interface AiSourceProposal {
+  id: string;
+  targetFilePath: string;
+  summary: string;
+  rationale: string;
+  proposedContent: string;
+  status: 'PENDING_REVIEW' | 'APPROVED' | 'REJECTED';
+  createdAt: string;
+  decidedAt?: string;
+  isSimulated: true;
+  authorityNote: string;
+}
+
+export interface ProjectAuthoringWorkspace {
+  journeyType: 'PRISM_APPLICATION' | 'RUST_WORKSPACE' | 'FORMAL_RESEARCH';
+  files: AuthoringSourceFile[];
+  revisionHistory: SourceRevisionEntry[];
+  checkpoints: SourceFileCheckpoint[];
+  pendingAiProposals: AiSourceProposal[];
+  capabilitiesDeclared: string[];
+  acceptanceCriteria: string[];
+  requiredToolchain: string[];
+  expectedOutputClasses: PrismOutputClassId[];
+  reviewStatus: 'DRAFT_UNREVIEWED' | 'OPERATOR_REVIEWED_FOR_HANDOFF';
+  lastReviewedAt?: string;
+}
+
+export type SourcePackageDestination =
+  | 'MAC_STUDIO_UOR_OFFLINE_FOUNDRY'
+  | 'AIR_GAPPED_PHYSICAL_MEDIA';
+
+export interface FoundrySourcePackageFileEntry {
+  path: string;
+  kind: AuthoringFileKind;
+  language: AuthoringSyntaxLanguage;
+  content: string;
+  sha256: string;
+  byteLength: number;
+  isAuthoritativeInput: boolean;
+}
+
+export interface FoundrySourcePackageManifest {
+  schema: 'uor.foundry.source-package.v1';
+  packageId: string;
+  packageClassification: 'UNVERIFIED_AUTHORED_SOURCE_PACKAGE';
+  isHoloArchive: false;
+  isCompilerGeneratedOutput: false;
+  projectId: string;
+  projectName: string;
+  productFamily: ProductFamily;
+  inputMode: PrismInputMode;
+  journeyType: ProjectAuthoringWorkspace['journeyType'];
+  sourceRevision: string;
+  createdAt: string;
+  exportedBy: string;
+  targetDestination: SourcePackageDestination;
+  targetWindmillWorkspace: 'uor-offline-foundry';
+  reviewConfirmed: true;
+  reviewSummary: string;
+  reviewStatus: ProjectAuthoringWorkspace['reviewStatus'];
+  lockfileRefs: string[];
+  requiredToolchain: string[];
+  inputHashes: Record<string, string>;
+  capabilitiesAndPermissions: string[];
+  acceptanceCriteria: string[];
+  expectedOutputClasses: PrismOutputClassId[];
+  files: FoundrySourcePackageFileEntry[];
+  packageDigestSha256: string;
+  securityDisclaimer: string;
+}
+
 

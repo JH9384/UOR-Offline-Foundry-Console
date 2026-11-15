@@ -1,6 +1,8 @@
 import {
+  ApprovalDecisionRecord,
   ArtifactProvenanceRecord,
   IntegrationMode,
+  ProjectRecord,
   VerifiedEvidenceRef,
   VerificationSuiteRecord,
   WindmillConnectionDiagnostic,
@@ -11,7 +13,14 @@ import {
   WindmillJobRecord,
 } from '../types/foundry';
 import { WINDMILL_ENDPOINTS, WINDMILL_TARGET_CONFIG } from './windmillAdapter';
-import { validateFixedRegistryCommand } from './windmillCommandRegistry';
+import {
+  ALLOWED_WINDMILL_WORKSPACE,
+  CanonicalCommandId,
+  FIXED_WINDMILL_COMMAND_REGISTRY,
+  validateFixedRegistryCommand,
+} from './windmillCommandRegistry';
+import { evaluateProjectOfflineClosure } from '../services/holoArchiveValidator';
+import { verificationAuthorityService } from '../services/verificationAuthorityService';
 
 /**
  * Layer 4: Windmill Execution Services Interface.
@@ -349,4 +358,351 @@ export function prepareRustWorkspaceModelContract(params: {
       `Browser preview refuses executing Cargo/build.rs directly (${params.declaredInputs || 'no Cargo path'}). Dispatch remains blocked until LOCAL Windmill is validated.`,
   };
 }
+
+export interface MockWindmillBackendHealth {
+  reachable: boolean;
+  workspace: string;
+  authenticated: boolean;
+  sdkAvailable: boolean;
+  missingSdkBinaries?: string[];
+  activeSourceRevision?: string;
+}
+
+export interface MockWindmillJobPollResponse {
+  status: 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'CANCELLED' | 'FAILED' | 'TIMED_OUT';
+  stageResults?: Array<{ stage: string; commandId: CanonicalCommandId; exitCode: number }>;
+  producedManifests?: Array<{
+    path: string;
+    expectedSha256: string;
+    actualSha256: string;
+    outputClass: ArtifactProvenanceRecord['outputClass'];
+  }>;
+  errorReason?: string;
+}
+
+export interface WindmillMockTransport {
+  checkHealth(): Promise<MockWindmillBackendHealth>;
+  submitJob(payload: {
+    commandId: CanonicalCommandId;
+    idempotencyKey: string;
+    workspace: string;
+    projectRelativePath: string;
+    sourceRevision: string;
+  }): Promise<
+    | { ok: true; jobId: string; status: 'QUEUED' }
+    | { ok: false; code: 'DUPLICATE_COMMAND_REFUSED' | 'WORKER_UNAVAILABLE' | 'SOURCE_REVISION_MISMATCH'; reason: string }
+  >;
+  pollJob(jobId: string): Promise<MockWindmillJobPollResponse>;
+  cancelJob(jobId: string): Promise<{ ok: boolean; status: 'CANCELLED' | 'NOT_FOUND'; reason?: string }>;
+}
+
+export type WorkflowContractFailureCode =
+  | 'WORKSPACE_MISMATCH'
+  | 'INVALID_COMMAND'
+  | 'OPERATOR_APPROVAL_REQUIRED'
+  | 'WORKER_UNAVAILABLE'
+  | 'MISSING_SDK_BINARY'
+  | 'SOURCE_REVISION_MISMATCH'
+  | 'MISSING_DEPENDENCY_LOCKS'
+  | 'DUPLICATE_COMMAND_REFUSED'
+  | 'JOB_FAILED'
+  | 'JOB_TIMED_OUT'
+  | 'JOB_CANCELLED'
+  | 'ARTIFACT_DIGEST_MISMATCH'
+  | 'VERIFICATION_NOT_ESTABLISHED'
+  | 'RELEASE_BLOCKED';
+
+export interface GovernedWorkflowContractResult {
+  ok: boolean;
+  finalJobStatus: 'COMPLETED' | 'CANCELLED' | 'FAILED' | 'TIMED_OUT' | 'REFUSED';
+  jobId?: string;
+  failureCode?: WorkflowContractFailureCode;
+  reason: string;
+  pollHistory: MockWindmillJobPollResponse['status'][];
+  reconciledArtifactCount: number;
+  verificationState: 'VERIFIED' | 'NOT VERIFIED';
+  releaseStatus: 'ELIGIBLE_FOR_PRODUCTION_RELEASE' | 'RELEASE BLOCKED';
+}
+
+/**
+ * Deterministic workflow integration contract evaluator used against a real or mocked
+ * Windmill backend transport (never fakes local Mac Studio success in live browser UI).
+ */
+export async function executeGovernedWorkflowContract(params: {
+  transport: WindmillMockTransport;
+  project: ProjectRecord;
+  commandId: CanonicalCommandId;
+  idempotencyKey: string;
+  projectRelativePath: string;
+  workspace?: string;
+  operatorApproved?: boolean;
+  maxPolls?: number;
+  cancelAfterFirstPoll?: boolean;
+  verifications: VerificationSuiteRecord[];
+  artifacts: ArtifactProvenanceRecord[];
+  approvals: ApprovalDecisionRecord[];
+}): Promise<GovernedWorkflowContractResult> {
+  const workspace = params.workspace ?? ALLOWED_WINDMILL_WORKSPACE;
+  const verStateFallback = verificationAuthorityService.evaluateProjectAuthority({
+    project: params.project,
+    verifications: params.verifications,
+    artifacts: params.artifacts,
+    approvals: params.approvals,
+  });
+
+  if (workspace !== ALLOWED_WINDMILL_WORKSPACE) {
+    return {
+      ok: false,
+      finalJobStatus: 'REFUSED',
+      failureCode: 'WORKSPACE_MISMATCH',
+      reason: `Refused workspace "${workspace}": only "${ALLOWED_WINDMILL_WORKSPACE}" is allowed.`,
+      pollHistory: [],
+      reconciledArtifactCount: 0,
+      verificationState: verStateFallback.overallVerificationState,
+      releaseStatus: verStateFallback.releaseStatusLabel,
+    };
+  }
+
+  const registryEntry = FIXED_WINDMILL_COMMAND_REGISTRY.find((c) => c.commandId === params.commandId);
+  const cmdCheck = validateFixedRegistryCommand({
+    commandId: params.commandId,
+    projectRelativePath: params.projectRelativePath,
+    sourceRevision: params.project.sourceRevision,
+  });
+  if (!registryEntry || !cmdCheck.allowed) {
+    return {
+      ok: false,
+      finalJobStatus: 'REFUSED',
+      failureCode: 'INVALID_COMMAND',
+      reason: cmdCheck.reason || `Command "${params.commandId}" failed fixed registry admission.`,
+      pollHistory: [],
+      reconciledArtifactCount: 0,
+      verificationState: verStateFallback.overallVerificationState,
+      releaseStatus: verStateFallback.releaseStatusLabel,
+    };
+  }
+
+  if (registryEntry.requiresOperatorApproval && !params.operatorApproved) {
+    return {
+      ok: false,
+      finalJobStatus: 'REFUSED',
+      failureCode: 'OPERATOR_APPROVAL_REQUIRED',
+      reason: `Command "${params.commandId}" requires explicit operator approval before dispatch.`,
+      pollHistory: [],
+      reconciledArtifactCount: 0,
+      verificationState: verStateFallback.overallVerificationState,
+      releaseStatus: verStateFallback.releaseStatusLabel,
+    };
+  }
+
+  // Lockfile closure pre-flight for locked commands or build/verify stages
+  const authoredLocks = params.project.authoringWorkspace?.files
+    .filter((f) => f.kind === 'lockfile')
+    .map((f) => f.path);
+  const declaredLocks = Array.from(
+    new Set([...(params.project.lockfilesDeclared ?? []), ...(authoredLocks ?? [])])
+  );
+  if (registryEntry.stageId === 'lock' || registryEntry.stageId === 'build' || registryEntry.stageId === 'verify') {
+    const closure = evaluateProjectOfflineClosure(
+      params.project.inputMode ?? 'NATIVE_PRISM',
+      declaredLocks
+    );
+    if (!closure.readyForOfflineRun) {
+      return {
+        ok: false,
+        finalJobStatus: 'REFUSED',
+        failureCode: 'MISSING_DEPENDENCY_LOCKS',
+        reason: `PP5401: ${closure.blockingReasons.join('; ') || 'Required lockfiles missing for offline closure.'}`,
+        pollHistory: [],
+        reconciledArtifactCount: 0,
+        verificationState: verStateFallback.overallVerificationState,
+        releaseStatus: verStateFallback.releaseStatusLabel,
+      };
+    }
+  }
+
+  const health = await params.transport.checkHealth();
+  if (!health.reachable || !health.authenticated) {
+    return {
+      ok: false,
+      finalJobStatus: 'REFUSED',
+      failureCode: 'WORKER_UNAVAILABLE',
+      reason: 'Windmill worker or Mac Studio session unavailable/unauthenticated.',
+      pollHistory: [],
+      reconciledArtifactCount: 0,
+      verificationState: verStateFallback.overallVerificationState,
+      releaseStatus: verStateFallback.releaseStatusLabel,
+    };
+  }
+
+  if (!health.sdkAvailable) {
+    return {
+      ok: false,
+      finalJobStatus: 'REFUSED',
+      failureCode: 'MISSING_SDK_BINARY',
+      reason: `Required SDK binary missing on worker: ${(health.missingSdkBinaries ?? [registryEntry.executable]).join(', ')}.`,
+      pollHistory: [],
+      reconciledArtifactCount: 0,
+      verificationState: verStateFallback.overallVerificationState,
+      releaseStatus: verStateFallback.releaseStatusLabel,
+    };
+  }
+
+  if (health.activeSourceRevision && health.activeSourceRevision !== params.project.sourceRevision) {
+    return {
+      ok: false,
+      finalJobStatus: 'REFUSED',
+      failureCode: 'SOURCE_REVISION_MISMATCH',
+      reason: `Worker checked out "${health.activeSourceRevision}" which does not match project sourceRevision "${params.project.sourceRevision}".`,
+      pollHistory: [],
+      reconciledArtifactCount: 0,
+      verificationState: verStateFallback.overallVerificationState,
+      releaseStatus: verStateFallback.releaseStatusLabel,
+    };
+  }
+
+  const submission = await params.transport.submitJob({
+    commandId: params.commandId,
+    idempotencyKey: params.idempotencyKey,
+    workspace,
+    projectRelativePath: params.projectRelativePath,
+    sourceRevision: params.project.sourceRevision,
+  });
+
+  if (!submission.ok) {
+    return {
+      ok: false,
+      finalJobStatus: 'REFUSED',
+      failureCode: submission.code,
+      reason: submission.reason,
+      pollHistory: [],
+      reconciledArtifactCount: 0,
+      verificationState: verStateFallback.overallVerificationState,
+      releaseStatus: verStateFallback.releaseStatusLabel,
+    };
+  }
+
+  const pollHistory: MockWindmillJobPollResponse['status'][] = [submission.status];
+  const maxPolls = params.maxPolls ?? 5;
+  let finalResponse: MockWindmillJobPollResponse | null = null;
+
+  for (let i = 0; i < maxPolls; i++) {
+    const polled = await params.transport.pollJob(submission.jobId);
+    pollHistory.push(polled.status);
+    finalResponse = polled;
+
+    if (params.cancelAfterFirstPoll && (polled.status === 'QUEUED' || polled.status === 'RUNNING')) {
+      const cancelRes = await params.transport.cancelJob(submission.jobId);
+      pollHistory.push(cancelRes.status === 'CANCELLED' ? 'CANCELLED' : polled.status);
+      return {
+        ok: false,
+        finalJobStatus: 'CANCELLED',
+        jobId: submission.jobId,
+        failureCode: 'JOB_CANCELLED',
+        reason: cancelRes.reason ?? `Operator cancelled Windmill job "${submission.jobId}".`,
+        pollHistory,
+        reconciledArtifactCount: 0,
+        verificationState: verStateFallback.overallVerificationState,
+        releaseStatus: verStateFallback.releaseStatusLabel,
+      };
+    }
+
+    if (polled.status === 'COMPLETED' || polled.status === 'FAILED' || polled.status === 'TIMED_OUT' || polled.status === 'CANCELLED') {
+      break;
+    }
+  }
+
+  if (!finalResponse || finalResponse.status === 'FAILED') {
+    return {
+      ok: false,
+      finalJobStatus: 'FAILED',
+      jobId: submission.jobId,
+      failureCode: 'JOB_FAILED',
+      reason: finalResponse?.errorReason ?? 'Windmill job failed during stage execution.',
+      pollHistory,
+      reconciledArtifactCount: 0,
+      verificationState: verStateFallback.overallVerificationState,
+      releaseStatus: verStateFallback.releaseStatusLabel,
+    };
+  }
+
+  if (finalResponse.status === 'TIMED_OUT' || finalResponse.status === 'QUEUED' || finalResponse.status === 'RUNNING') {
+    return {
+      ok: false,
+      finalJobStatus: 'TIMED_OUT',
+      jobId: submission.jobId,
+      failureCode: 'JOB_TIMED_OUT',
+      reason: finalResponse.errorReason ?? `Windmill job "${submission.jobId}" exceeded poll/deadline budget.`,
+      pollHistory,
+      reconciledArtifactCount: 0,
+      verificationState: verStateFallback.overallVerificationState,
+      releaseStatus: verStateFallback.releaseStatusLabel,
+    };
+  }
+
+  if (finalResponse.status === 'CANCELLED') {
+    return {
+      ok: false,
+      finalJobStatus: 'CANCELLED',
+      jobId: submission.jobId,
+      failureCode: 'JOB_CANCELLED',
+      reason: finalResponse.errorReason ?? `Job "${submission.jobId}" was cancelled.`,
+      pollHistory,
+      reconciledArtifactCount: 0,
+      verificationState: verStateFallback.overallVerificationState,
+      releaseStatus: verStateFallback.releaseStatusLabel,
+    };
+  }
+
+  const manifests = finalResponse.producedManifests ?? [];
+  for (const m of manifests) {
+    if (!m.actualSha256 || m.actualSha256 !== m.expectedSha256) {
+      return {
+        ok: false,
+        finalJobStatus: 'FAILED',
+        jobId: submission.jobId,
+        failureCode: 'ARTIFACT_DIGEST_MISMATCH',
+        reason: `Artifact digest mismatch for "${m.path}": expected ${m.expectedSha256.slice(0, 12)}, got ${m.actualSha256.slice(0, 12)}.`,
+        pollHistory,
+        reconciledArtifactCount: 0,
+        verificationState: 'NOT VERIFIED',
+        releaseStatus: 'RELEASE BLOCKED',
+      };
+    }
+  }
+
+  // Independent verification & release authority ALWAYS re-evaluated fail-closed (no implicit release from job completion)
+  const postAuth = verificationAuthorityService.evaluateProjectAuthority({
+    project: params.project,
+    verifications: params.verifications,
+    artifacts: params.artifacts,
+    approvals: params.approvals,
+  });
+
+  if (params.commandId === 'prismpm_export_browser' && !postAuth.releaseEligible) {
+    return {
+      ok: false,
+      finalJobStatus: 'COMPLETED',
+      jobId: submission.jobId,
+      failureCode: postAuth.overallVerificationState === 'NOT VERIFIED' ? 'VERIFICATION_NOT_ESTABLISHED' : 'RELEASE_BLOCKED',
+      reason: postAuth.blockingReasons[0] ?? 'Release remains blocked without authenticated verification & human approval.',
+      pollHistory,
+      reconciledArtifactCount: manifests.length,
+      verificationState: postAuth.overallVerificationState,
+      releaseStatus: postAuth.releaseStatusLabel,
+    };
+  }
+
+  return {
+    ok: true,
+    finalJobStatus: 'COMPLETED',
+    jobId: submission.jobId,
+    reason: `Governed job "${submission.jobId}" completed and reconciled ${manifests.length} output manifest(s); independent release state remains ${postAuth.releaseStatusLabel}.`,
+    pollHistory,
+    reconciledArtifactCount: manifests.length,
+    verificationState: postAuth.overallVerificationState,
+    releaseStatus: postAuth.releaseStatusLabel,
+  };
+}
+
 

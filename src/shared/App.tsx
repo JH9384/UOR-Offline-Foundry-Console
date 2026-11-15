@@ -9,7 +9,7 @@ import { MockPreviewChatProvider } from './adapters/chatProviderAdapter';
 import { IntakeModal } from './components/IntakeModal';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
-import { BuildModePanel } from './components/studio/BuildModePanel';
+import { BuildModePanel, BuildSubTab } from './components/studio/BuildModePanel';
 import { ChatPanel } from './components/studio/ChatPanel';
 import { LivePreviewPanel } from './components/studio/LivePreviewPanel';
 import { SourceCompliancePanel } from './components/studio/SourceCompliancePanel';
@@ -49,7 +49,17 @@ import {
   computeDeterministicPureStateHash,
   foundryService,
 } from './services/foundryService';
+import {
+  buildSourcePackageManifest,
+  createAuthoringCheckpoint,
+  createSimulatedAiSourceProposal,
+  downloadSourcePackage,
+  ensureProjectAuthoringWorkspace,
+  inferAuthoringFileMeta,
+  validateDraftFilePath,
+} from './services/sourceAuthoringService';
 import { foundrySyncService } from './services/syncService';
+import { verificationAuthorityService } from './services/verificationAuthorityService';
 import {
   ActivityEvent,
   AiAdvisoryEntry,
@@ -62,13 +72,16 @@ import {
   DraftHistoryEntry,
   DurableOperation,
   EngineeringIntakePayload,
+  FoundrySourcePackageManifest,
   IntegrationMode,
   NavigationSectionId,
   OfflineQueueItem,
   PreviewConfigState,
   PreviewElementRef,
+  ProjectAuthoringWorkspace,
   ProjectCheckpoint,
   ProjectRecord,
+  SourcePackageDestination,
   SyncConflictRecord,
   VerificationSuiteRecord,
   WindmillExecutionRequest,
@@ -189,6 +202,7 @@ export default function App() {
 
   const [workspaceShell, setWorkspaceShell] = useState<'studio' | 'advanced'>('studio');
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('chat');
+  const [buildSubTab, setBuildSubTab] = useState<BuildSubTab>('pipeline');
   const [verifySubTab, setVerifySubTab] = useState<VerifySubTab>('evidence');
   const [activeSection, setActiveSection] = useState<NavigationSectionId>('overview');
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
@@ -1222,6 +1236,530 @@ export default function App() {
     setWorkspaceMode('verify');
   };
 
+  const openSourceAuthoringContext = () => {
+    setBuildSubTab('authoring');
+    setWorkspaceMode('build');
+  };
+
+  const bumpDraftRevisionTag = (currentRev: string): string => {
+    const match = currentRev.match(/^(.*)-draft\.(\d+)$/);
+    if (match) {
+      return `${match[1]}-draft.${Number.parseInt(match[2], 10) + 1}`;
+    }
+    return `${currentRev}-draft.1`;
+  };
+
+  const handleSaveSourceFile = (params: {
+    projectId: string;
+    filePath: string;
+    newContent: string;
+    revisionNote?: string;
+  }) => {
+    const now = new Date().toISOString();
+    const targetProject = state.projects.find((p) => p.id === params.projectId);
+    if (!targetProject) return;
+
+    const currentWs = ensureProjectAuthoringWorkspace(targetProject);
+    const targetFile = currentWs.files.find((f) => f.path === params.filePath);
+    if (!targetFile) return;
+
+    const isAuthoritativeEdit = targetFile.isAuthoritativeInput;
+    const nextSourceRev = isAuthoritativeEdit
+      ? bumpDraftRevisionTag(targetProject.sourceRevision)
+      : targetProject.sourceRevision;
+
+    const updatedFiles = currentWs.files.map((f) =>
+      f.path === params.filePath
+        ? {
+            ...f,
+            content: params.newContent,
+            lastEditedAt: now,
+            lastEditedBy: 'Operator (Browser Authoring)',
+            revisionNote: params.revisionNote ?? f.revisionNote,
+          }
+        : f
+    );
+
+    const invResult = isAuthoritativeEdit
+      ? verificationAuthorityService.invalidateStaleEvidenceOnSourceChange({
+          project: targetProject,
+          newSourceRevision: nextSourceRev,
+          verifications: state.verifications,
+          approvals: state.approvals,
+        })
+      : {
+          updatedProject: { ...targetProject, updatedAt: now },
+          updatedVerifications: state.verifications,
+          updatedApprovals: state.approvals,
+          invalidatedSuiteIds: [],
+        };
+
+    const nextWs: ProjectAuthoringWorkspace = {
+      ...currentWs,
+      files: updatedFiles,
+      reviewStatus: 'DRAFT_UNREVIEWED',
+      revisionHistory: [
+        {
+          revisionId: `rev-${Date.now()}`,
+          sourceRevision: nextSourceRev,
+          summary:
+            params.revisionNote ??
+            `Edited ${params.filePath}${isAuthoritativeEdit ? ' (authoritative input)' : ''}`,
+          timestamp: now,
+          author: 'Operator',
+          changedFiles: [params.filePath],
+          invalidatedVerification: isAuthoritativeEdit && invResult.invalidatedSuiteIds.length > 0,
+        },
+        ...currentWs.revisionHistory,
+      ],
+    };
+
+    setState((prev) => {
+      const nextRev = prev.revision + 1;
+      const op = durableLocalStore.createOperation({
+        projectId: params.projectId,
+        kind: 'SOURCE_DRAFT_EDIT',
+        label: `Saved draft source "${params.filePath}"`,
+        revision: nextRev,
+        note: isAuthoritativeEdit
+          ? `Bumped revision to ${nextSourceRev}; INV-003 invalidated prior verification state.`
+          : 'Saved non-authoritative draft metadata.',
+      });
+      return {
+        ...prev,
+        revision: nextRev,
+        projects: prev.projects.map((p) =>
+          p.id === params.projectId
+            ? { ...invResult.updatedProject, authoringWorkspace: nextWs }
+            : p
+        ),
+        verifications: invResult.updatedVerifications,
+        approvals: invResult.updatedApprovals,
+        operations: [op, ...prev.operations],
+      };
+    });
+
+    notify(
+      isAuthoritativeEdit ? 'warning' : 'success',
+      isAuthoritativeEdit
+        ? `Saved "${params.filePath}" (${nextSourceRev}). INV-003 marked prior verification/approvals STALE until re-verified locally.`
+        : `Saved draft "${params.filePath}".`
+    );
+  };
+
+  const handleAddSourceFile = (params: {
+    projectId: string;
+    filePath: string;
+    content: string;
+  }): { ok: boolean; error?: string } => {
+    const pathCheck = validateDraftFilePath(params.filePath);
+    if (!pathCheck.ok) {
+      notify('error', pathCheck.error);
+      return { ok: false, error: pathCheck.error };
+    }
+    const targetProject = state.projects.find((p) => p.id === params.projectId);
+    if (!targetProject) return { ok: false, error: 'Project not found.' };
+    const currentWs = ensureProjectAuthoringWorkspace(targetProject);
+    if (currentWs.files.some((f) => f.path === pathCheck.cleanPath)) {
+      const err = `File "${pathCheck.cleanPath}" already exists.`;
+      notify('error', err);
+      return { ok: false, error: err };
+    }
+
+    const now = new Date().toISOString();
+    const meta = inferAuthoringFileMeta(pathCheck.cleanPath);
+    const nextFile = {
+      path: pathCheck.cleanPath,
+      kind: meta.kind,
+      language: meta.language,
+      content: params.content,
+      lastEditedAt: now,
+      lastEditedBy: 'Operator',
+      isAuthoritativeInput: meta.isAuthoritativeInput,
+    };
+
+    const nextSourceRev = meta.isAuthoritativeInput
+      ? bumpDraftRevisionTag(targetProject.sourceRevision)
+      : targetProject.sourceRevision;
+
+    const invResult = meta.isAuthoritativeInput
+      ? verificationAuthorityService.invalidateStaleEvidenceOnSourceChange({
+          project: targetProject,
+          newSourceRevision: nextSourceRev,
+          verifications: state.verifications,
+          approvals: state.approvals,
+        })
+      : {
+          updatedProject: { ...targetProject, updatedAt: now },
+          updatedVerifications: state.verifications,
+          updatedApprovals: state.approvals,
+          invalidatedSuiteIds: [],
+        };
+
+    const nextWs: ProjectAuthoringWorkspace = {
+      ...currentWs,
+      files: [...currentWs.files, nextFile],
+      reviewStatus: 'DRAFT_UNREVIEWED',
+      revisionHistory: [
+        {
+          revisionId: `rev-add-${Date.now()}`,
+          sourceRevision: nextSourceRev,
+          summary: `Added draft file ${pathCheck.cleanPath}`,
+          timestamp: now,
+          author: 'Operator',
+          changedFiles: [pathCheck.cleanPath],
+          invalidatedVerification: meta.isAuthoritativeInput,
+        },
+        ...currentWs.revisionHistory,
+      ],
+    };
+
+    setState((prev) => {
+      const nextRev = prev.revision + 1;
+      const op = durableLocalStore.createOperation({
+        projectId: params.projectId,
+        kind: 'SOURCE_DRAFT_EDIT',
+        label: `Added draft source "${pathCheck.cleanPath}"`,
+        revision: nextRev,
+        note: meta.isAuthoritativeInput
+          ? `Added authoritative file; bumped revision to ${nextSourceRev}.`
+          : 'Added non-authoritative draft metadata file.',
+      });
+      return {
+        ...prev,
+        revision: nextRev,
+        projects: prev.projects.map((p) =>
+          p.id === params.projectId
+            ? { ...invResult.updatedProject, authoringWorkspace: nextWs }
+            : p
+        ),
+        verifications: invResult.updatedVerifications,
+        approvals: invResult.updatedApprovals,
+        operations: [op, ...prev.operations],
+      };
+    });
+
+    notify('success', `Added draft source file "${pathCheck.cleanPath}".`);
+    return { ok: true };
+  };
+
+  const handleCreateSourceCheckpoint = async (projectId: string, name: string) => {
+    const targetProject = state.projects.find((p) => p.id === projectId);
+    if (!targetProject) return;
+    const currentWs = ensureProjectAuthoringWorkspace(targetProject);
+    const cp = await createAuthoringCheckpoint({
+      projectId,
+      name,
+      sourceRevision: targetProject.sourceRevision,
+      files: currentWs.files,
+    });
+    setState((prev) => ({
+      ...prev,
+      revision: prev.revision + 1,
+      projects: prev.projects.map((p) =>
+        p.id === projectId
+          ? {
+              ...p,
+              authoringWorkspace: {
+                ...ensureProjectAuthoringWorkspace(p),
+                checkpoints: [cp, ...ensureProjectAuthoringWorkspace(p).checkpoints],
+              },
+            }
+          : p
+      ),
+    }));
+    notify('success', `Saved source checkpoint "${cp.name}" (sha:${cp.stateSha256.slice(0, 12)}).`);
+  };
+
+  const handleRestoreSourceCheckpoint = (projectId: string, checkpointId: string) => {
+    const targetProject = state.projects.find((p) => p.id === projectId);
+    if (!targetProject) return;
+    const currentWs = ensureProjectAuthoringWorkspace(targetProject);
+    const cp = currentWs.checkpoints.find((c) => c.id === checkpointId);
+    if (!cp) return;
+    const now = new Date().toISOString();
+    const nextRevTag = bumpDraftRevisionTag(targetProject.sourceRevision);
+    const invResult = verificationAuthorityService.invalidateStaleEvidenceOnSourceChange({
+      project: targetProject,
+      newSourceRevision: nextRevTag,
+      verifications: state.verifications,
+      approvals: state.approvals,
+    });
+
+    const nextWs: ProjectAuthoringWorkspace = {
+      ...currentWs,
+      files: cp.filesSnapshot.map((f) => ({ ...f })),
+      reviewStatus: 'DRAFT_UNREVIEWED',
+      revisionHistory: [
+        {
+          revisionId: `rev-restore-${Date.now()}`,
+          sourceRevision: nextRevTag,
+          summary: `Restored checkpoint "${cp.name}" (${cp.sourceRevision})`,
+          timestamp: now,
+          author: 'Operator',
+          changedFiles: cp.filesSnapshot.map((f) => f.path),
+          invalidatedVerification: invResult.invalidatedSuiteIds.length > 0,
+        },
+        ...currentWs.revisionHistory,
+      ],
+    };
+
+    setState((prev) => ({
+      ...prev,
+      revision: prev.revision + 1,
+      projects: prev.projects.map((p) =>
+        p.id === projectId ? { ...invResult.updatedProject, authoringWorkspace: nextWs } : p
+      ),
+      verifications: invResult.updatedVerifications,
+      approvals: invResult.updatedApprovals,
+    }));
+    notify('info', `Restored source checkpoint "${cp.name}".`);
+  };
+
+  const handleRequestAiSourceProposal = (params: {
+    projectId: string;
+    filePath: string;
+    instruction: string;
+  }) => {
+    const targetProject = state.projects.find((p) => p.id === params.projectId);
+    if (!targetProject) return;
+    const currentWs = ensureProjectAuthoringWorkspace(targetProject);
+    const targetFile = currentWs.files.find((f) => f.path === params.filePath);
+    if (!targetFile) return;
+
+    const proposal = createSimulatedAiSourceProposal({
+      targetFile,
+      instruction: params.instruction,
+    });
+
+    setState((prev) => ({
+      ...prev,
+      revision: prev.revision + 1,
+      projects: prev.projects.map((p) =>
+        p.id === params.projectId
+          ? {
+              ...p,
+              authoringWorkspace: {
+                ...ensureProjectAuthoringWorkspace(p),
+                pendingAiProposals: [proposal, ...ensureProjectAuthoringWorkspace(p).pendingAiProposals],
+              },
+            }
+          : p
+      ),
+    }));
+    notify(
+      'info',
+      `Created simulated AI draft proposal for "${params.filePath}". Review diff & explicitly approve before applying.`
+    );
+  };
+
+  const handleDecideAiSourceProposal = (params: {
+    projectId: string;
+    proposalId: string;
+    decision: 'APPROVED' | 'REJECTED';
+  }) => {
+    const targetProject = state.projects.find((p) => p.id === params.projectId);
+    if (!targetProject) return;
+    const currentWs = ensureProjectAuthoringWorkspace(targetProject);
+    const proposal = currentWs.pendingAiProposals.find((pr) => pr.id === params.proposalId);
+    if (!proposal || proposal.status !== 'PENDING_REVIEW') return;
+
+    const now = new Date().toISOString();
+    const updatedProposals = currentWs.pendingAiProposals.map((pr) =>
+      pr.id === params.proposalId ? { ...pr, status: params.decision, decidedAt: now } : pr
+    );
+
+    if (params.decision === 'REJECTED') {
+      setState((prev) => ({
+        ...prev,
+        revision: prev.revision + 1,
+        projects: prev.projects.map((p) =>
+          p.id === params.projectId
+            ? {
+                ...p,
+                authoringWorkspace: { ...currentWs, pendingAiProposals: updatedProposals },
+              }
+            : p
+        ),
+      }));
+      notify('info', `Rejected AI source draft for "${proposal.targetFilePath}".`);
+      return;
+    }
+
+    const targetFile = currentWs.files.find((f) => f.path === proposal.targetFilePath);
+    const isAuth = Boolean(targetFile?.isAuthoritativeInput);
+    const nextSourceRev = isAuth
+      ? bumpDraftRevisionTag(targetProject.sourceRevision)
+      : targetProject.sourceRevision;
+
+    const invResult = isAuth
+      ? verificationAuthorityService.invalidateStaleEvidenceOnSourceChange({
+          project: targetProject,
+          newSourceRevision: nextSourceRev,
+          verifications: state.verifications,
+          approvals: state.approvals,
+        })
+      : {
+          updatedProject: { ...targetProject, updatedAt: now },
+          updatedVerifications: state.verifications,
+          updatedApprovals: state.approvals,
+          invalidatedSuiteIds: [],
+        };
+
+    const nextWs: ProjectAuthoringWorkspace = {
+      ...currentWs,
+      pendingAiProposals: updatedProposals,
+      files: currentWs.files.map((f) =>
+        f.path === proposal.targetFilePath
+          ? {
+              ...f,
+              content: proposal.proposedContent,
+              lastEditedAt: now,
+              lastEditedBy: 'Operator (Approved AI Draft)',
+              revisionNote: proposal.summary,
+            }
+          : f
+      ),
+      reviewStatus: 'DRAFT_UNREVIEWED',
+      revisionHistory: [
+        {
+          revisionId: `rev-ai-${Date.now()}`,
+          sourceRevision: nextSourceRev,
+          summary: `Operator approved AI draft on ${proposal.targetFilePath}`,
+          timestamp: now,
+          author: 'Operator',
+          changedFiles: [proposal.targetFilePath],
+          invalidatedVerification: isAuth && invResult.invalidatedSuiteIds.length > 0,
+        },
+        ...currentWs.revisionHistory,
+      ],
+    };
+
+    setState((prev) => {
+      const nextRev = prev.revision + 1;
+      const op = durableLocalStore.createOperation({
+        projectId: params.projectId,
+        kind: 'SOURCE_DRAFT_EDIT',
+        label: `Approved AI draft edit on "${proposal.targetFilePath}"`,
+        revision: nextRev,
+        note: `Operator explicitly approved AI source draft for ${proposal.targetFilePath}.`,
+      });
+      return {
+        ...prev,
+        revision: nextRev,
+        projects: prev.projects.map((p) =>
+          p.id === params.projectId
+            ? { ...invResult.updatedProject, authoringWorkspace: nextWs }
+            : p
+        ),
+        verifications: invResult.updatedVerifications,
+        approvals: invResult.updatedApprovals,
+        operations: [op, ...prev.operations],
+      };
+    });
+    notify(
+      'success',
+      `Approved & applied AI source draft to "${proposal.targetFilePath}".`
+    );
+  };
+
+  const handleExportSourcePackage = async (params: {
+    projectId: string;
+    reviewConfirmed: boolean;
+    reviewSummary: string;
+    targetDestination: SourcePackageDestination;
+  }): Promise<{ ok: boolean; filename?: string; manifest?: FoundrySourcePackageManifest; error?: string }> => {
+    const targetProject = state.projects.find((p) => p.id === params.projectId);
+    if (!targetProject) return { ok: false, error: 'Project not found.' };
+    const ws = ensureProjectAuthoringWorkspace(targetProject);
+    try {
+      const manifest = await buildSourcePackageManifest({
+        project: targetProject,
+        workspace: ws,
+        reviewConfirmed: params.reviewConfirmed,
+        reviewSummary: params.reviewSummary,
+        targetDestination: params.targetDestination,
+      });
+      const filename = downloadSourcePackage(manifest);
+      const now = new Date().toISOString();
+      setState((prev) => {
+        const nextRev = prev.revision + 1;
+        const op = durableLocalStore.createOperation({
+          projectId: params.projectId,
+          kind: 'SOURCE_PACKAGE_EXPORT',
+          label: `Exported source package "${filename}"`,
+          revision: nextRev,
+          note: `Classification=${manifest.packageClassification}, Target=${params.targetDestination}`,
+        });
+        return {
+          ...prev,
+          revision: nextRev,
+          projects: prev.projects.map((p) =>
+            p.id === params.projectId
+              ? {
+                  ...p,
+                  authoringWorkspace: {
+                    ...ensureProjectAuthoringWorkspace(p),
+                    reviewStatus: 'OPERATOR_REVIEWED_FOR_HANDOFF',
+                    lastReviewedAt: now,
+                  },
+                }
+              : p
+          ),
+          operations: [op, ...prev.operations],
+        };
+      });
+      notify('success', `Exported Foundry source package: ${filename} (NOT .holo)`);
+      return { ok: true, filename, manifest };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to export source package.';
+      notify('error', message);
+      return { ok: false, error: message };
+    }
+  };
+
+  const handleImportVerifiedSourcePackage = (params: {
+    projectId: string;
+    manifest: FoundrySourcePackageManifest;
+    workspace: ProjectAuthoringWorkspace;
+  }) => {
+    const targetProject = state.projects.find((p) => p.id === params.projectId);
+    if (!targetProject) return;
+    const invResult =
+      params.manifest.sourceRevision &&
+      params.manifest.sourceRevision !== targetProject.sourceRevision
+        ? verificationAuthorityService.invalidateStaleEvidenceOnSourceChange({
+            project: targetProject,
+            newSourceRevision: params.manifest.sourceRevision,
+            verifications: state.verifications,
+            approvals: state.approvals,
+          })
+        : {
+            updatedProject: targetProject,
+            updatedVerifications: state.verifications,
+            updatedApprovals: state.approvals,
+          };
+
+    setState((prev) => ({
+      ...prev,
+      revision: prev.revision + 1,
+      projects: prev.projects.map((p) =>
+        p.id === params.projectId
+          ? {
+              ...invResult.updatedProject,
+              authoringWorkspace: params.workspace,
+            }
+          : p
+      ),
+      verifications: invResult.updatedVerifications,
+      approvals: invResult.updatedApprovals,
+    }));
+    notify(
+      'success',
+      `Restored ${params.workspace.files.length} verified files from ${params.manifest.packageId}.`
+    );
+  };
+
   const dismissFirstRunGuide = () => {
     setShowFirstRunGuide(false);
     if (typeof window !== 'undefined') {
@@ -1373,6 +1911,7 @@ export default function App() {
                       onRejectDraftProposal={handleRejectDraftProposal}
                       onSwitchMode={setWorkspaceMode}
                       onOpenNewProject={() => setIntakeModalOpen(true)}
+                      onOpenSourceAuthoring={openSourceAuthoringContext}
                     />
                   </div>
                   <div className="xl:col-span-5 h-full min-h-0">
@@ -1395,6 +1934,7 @@ export default function App() {
                       onSelectElement={(el) => setReferencedElement(el)}
                       onSwitchMode={setWorkspaceMode}
                       onOpenSourceCompliance={openSourceComplianceContext}
+                      onOpenSourceAuthoring={openSourceAuthoringContext}
                     />
                   </div>
                 </div>
@@ -1424,6 +1964,7 @@ export default function App() {
                     }}
                     onSwitchMode={setWorkspaceMode}
                     onOpenSourceCompliance={openSourceComplianceContext}
+                    onOpenSourceAuthoring={openSourceAuthoringContext}
                   />
                 </div>
               )}
@@ -1437,10 +1978,20 @@ export default function App() {
                   jobRecords={state.jobReferences}
                   artifacts={state.artifacts}
                   operations={state.operations}
+                  activeSubTab={buildSubTab}
+                  onChangeSubTab={setBuildSubTab}
                   onAdvanceSimulation={handleAdvanceSimulation}
                   onStageWorkflowIntent={handleStageWorkflowIntent}
                   onOpenIntake={() => setIntakeModalOpen(true)}
                   onOpenAdvancedSection={openAdvancedSection}
+                  onSaveSourceFile={handleSaveSourceFile}
+                  onAddSourceFile={handleAddSourceFile}
+                  onCreateSourceCheckpoint={handleCreateSourceCheckpoint}
+                  onRestoreSourceCheckpoint={handleRestoreSourceCheckpoint}
+                  onRequestAiSourceProposal={handleRequestAiSourceProposal}
+                  onDecideAiSourceProposal={handleDecideAiSourceProposal}
+                  onExportSourcePackage={handleExportSourcePackage}
+                  onImportVerifiedSourcePackage={handleImportVerifiedSourcePackage}
                 />
               )}
 

@@ -11,7 +11,7 @@
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test:security": "vitest run src/tests/securityPredicates.vitest.test.ts && tsx --test src/tests/security.test.ts tests/securityRegression.test.ts",
-    "test:unit": "vitest run src/tests/projectStateTransitions.vitest.test.tsx src/tests/prismHologramAcceptance.vitest.test.tsx src/tests/sourceManifestConsistency.vitest.test.ts",
+    "test:unit": "vitest run src/tests/projectStateTransitions.vitest.test.tsx src/tests/prismHologramAcceptance.vitest.test.tsx src/tests/sourceManifestConsistency.vitest.test.ts src/tests/windmillContracts.vitest.test.ts src/tests/sourceAuthoringAndHandoff.vitest.test.tsx",
     "test": "npm run test:security && npm run test:unit && tsx --test src/tests/offlineReliability.test.ts",
     "test:e2e": "playwright test",
     "windmill:prepare": "node scripts/prepare-windmill-app.mjs",

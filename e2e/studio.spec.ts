@@ -66,11 +66,12 @@ test.describe('UOR Offline Foundry Studio Workspace E2E', () => {
     await page.getByRole('button', { name: /Submit & Launch Simulated Workflow/i }).click();
     await expect(page.getByText(/Project name must be at least 4 characters/i)).toBeVisible();
 
-    // 2. Verify 3 UOR-grounded synthetic templates and create Formal Research Project
+    // 2. Verify 3 UOR-grounded synthetic templates, structured input manifest preview, and create Formal Research Project
     await expect(page.getByTestId('template-formal-research')).toBeVisible();
     await expect(page.getByTestId('template-prism-product')).toBeVisible();
     await expect(page.getByTestId('template-rust-workspace-model')).toBeVisible();
     await page.getByTestId('template-formal-research').click();
+    await expect(page.getByTestId('intake-manifest-preview')).toContainText('Journey C');
     await page.locator('#intake-name').fill('LexLean Proof Template Run');
     await page.getByRole('button', { name: /Submit & Launch Simulated Workflow/i }).click();
     await expect(page.getByRole('dialog')).toBeHidden();
@@ -199,8 +200,35 @@ test.describe('UOR Offline Foundry Studio Workspace E2E', () => {
     await page.getByRole('button', { name: 'Stage Local Intent' }).click();
     await expect(page.getByRole('main').getByText(/Duplicate dispatch prevented/i)).toBeVisible();
 
-    // Check Build -> Artifacts tab direct download gating + Hologram v4 structural preflight
+    // Check Build -> Source Editor & Package authoring, preliminary diagnostics, AI draft approval, and source-package handoff
+    await page.getByTestId('build-subtab-authoring').click();
+    await expect(page.getByTestId('source-authoring-panel')).toBeVisible();
+    await expect(page.getByTestId('preliminary-diagnostics-panel')).toContainText('NOT LexLean parser');
+    const sourceArea = page.getByTestId('source-editor-textarea');
+    const origSource = await sourceArea.inputValue();
+    await sourceArea.fill(`${origSource}\n% Operator draft checkpoint note`);
+    await page.getByTestId('save-source-file-btn').click();
+
+    await page.getByRole('textbox', { name: 'Propose AI draft edit instruction' }).fill('Add requirement R-42');
+    await page.getByRole('button', { name: 'Propose AI Draft' }).click();
+    await expect(page.getByTestId('ai-source-proposals-panel')).toBeVisible();
+    await page.getByRole('button', { name: /Approve & Apply Source Edit/i }).click();
+
+    await expect(page.getByTestId('export-source-package-btn')).toBeDisabled();
+    await page.getByTestId('confirm-source-package-review').check();
+    const srcDownloadPromise = page.waitForEvent('download');
+    await page.getByTestId('export-source-package-btn').click();
+    const srcDownload = await srcDownloadPromise;
+    expect(srcDownload.suggestedFilename()).toMatch(/-source-package\.uor-src\.json$/);
+    await expect(page.getByTestId('source-package-export-status')).toContainText('Exported reviewed source package');
+    await page.getByTestId('verify-round-trip-btn').click();
+    await expect(page.getByTestId('round-trip-verification-result')).toContainText('Verified round-trip readback');
+
+    // Check Build -> Artifacts tab 10-category filter, direct download gating + Hologram v4 structural preflight
     await page.getByRole('button', { name: /Artifacts & Provenance/i }).click();
+    await expect(page.getByTestId('artifacts-source-package-summary')).toBeVisible();
+    await page.getByTestId('artifact-category-filter').selectOption('hologram_archive');
+    await page.getByTestId('artifact-category-filter').selectOption('all');
     await expect(page.getByTestId('direct-download-gate')).toBeVisible();
     await expect(page.getByRole('button', { name: /\.holo Archive Binary/i })).toBeDisabled();
     await page.getByRole('button', { name: /Test `PP3001` JSON Rejection/i }).click();

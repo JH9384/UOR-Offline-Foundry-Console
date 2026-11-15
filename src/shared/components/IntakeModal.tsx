@@ -6,6 +6,7 @@ import {
   IntakeValidationErrors,
   PROJECT_TEMPLATES,
 } from '../services/foundryService';
+import { buildStructuredInputManifestPreview } from '../services/sourceAuthoringService';
 import {
   EngineeringComponentId,
   EngineeringIntakePayload,
@@ -241,14 +242,20 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
             </div>
           </div>
 
-          {/* Synthetic UOR-grounded Templates */}
+          {/* Guided Product Creation Journeys */}
           <div className="space-y-2">
             <div className="text-xs font-medium text-slate-300">
-              Start from a UOR Synthetic Template (Optional)
+              Guided Product Creation Journeys (Structured Input Manifest)
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               {PROJECT_TEMPLATES.map((tpl) => {
                 const active = selectedTemplateId === tpl.id;
+                const journeyBadge =
+                  tpl.id === 'prism-product'
+                    ? 'Journey A · Prism-DevRel'
+                    : tpl.id === 'rust-workspace-model'
+                      ? 'Journey B · UORust'
+                      : 'Journey C · LexLean + Rule30';
                 return (
                   <button
                     key={tpl.id}
@@ -261,6 +268,7 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
                         : 'bg-[#0B0F17] border-slate-800 hover:border-slate-700 text-slate-300'
                     }`}
                   >
+                    <div className="text-[10px] font-mono text-sky-300 mb-0.5">{journeyBadge}</div>
                     <div className="text-xs font-medium text-slate-100">{tpl.title}</div>
                     <div className="text-[11px] text-slate-400 mt-0.5 leading-snug">
                       {tpl.description}
@@ -439,6 +447,40 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
               )}
             </div>
           </div>
+
+          {/* Structured Project Input Manifest Preview */}
+          {(() => {
+            const manifestPreview = buildStructuredInputManifestPreview({
+              projectName: form.projectName,
+              inputMode: form.inputMode ?? 'NATIVE_PRISM',
+              productFamily: form.productFamily,
+              sourceRevision: form.sourceRevision,
+              purpose: form.purpose,
+              guidedPrompt: form.guidedPrompt,
+            });
+            return (
+              <div
+                className="p-3.5 bg-[#0B0F17] border border-sky-500/30 rounded-md space-y-2 text-xs"
+                data-testid="intake-manifest-preview"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-medium text-sky-200">{manifestPreview.journeyLabel}</span>
+                  <span className="text-[10px] font-mono text-slate-400">
+                    {manifestPreview.contractSource}
+                  </span>
+                </div>
+                <div className="text-[11px] font-mono text-slate-300">
+                  Scaffolded Inputs ({manifestPreview.initialFiles.length}):{' '}
+                  {manifestPreview.initialFiles.join(', ')}
+                </div>
+                <div className="text-[11px] font-mono text-slate-400">
+                  Locks: {manifestPreview.lockfileRefs.join(', ')} · Expected Outputs:{' '}
+                  {manifestPreview.expectedOutputClasses.join(', ')}
+                </div>
+                <p className="text-[11px] text-amber-300">{manifestPreview.fabricatedProofWarning}</p>
+              </div>
+            );
+          })()}
 
           <div className="p-3.5 bg-[#0B0F17] border border-slate-800 rounded-md">
             <label className="flex items-start gap-2.5 cursor-pointer">
