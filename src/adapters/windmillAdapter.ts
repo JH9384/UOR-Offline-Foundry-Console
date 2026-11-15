@@ -47,6 +47,37 @@ export const WINDMILL_ENDPOINTS: WindmillApiEndpoints = {
   listMcpToolsOnResource: (ws, resourcePath) => `/api/w/${ws}/resources/mcp_tools/${resourcePath}`,
 };
 
+export interface WindmillDeploymentOptionSpec {
+  id: 'VITE_AUTHENTICATED_LOCAL_PROXY' | 'WINDMILL_NATIVE_WMILL_TS';
+  label: string;
+  documentationRefs: string[];
+  authBoundary: string;
+  frontendTransport: string;
+}
+
+export const WINDMILL_DEPLOYMENT_OPTIONS: WindmillDeploymentOptionSpec[] = [
+  {
+    id: 'VITE_AUTHENTICATED_LOCAL_PROXY',
+    label: 'Option A · Vite/React + Authenticated Local Backend Proxy',
+    documentationRefs: [
+      'https://www.windmill.dev/docs/full_code_apps',
+      'https://www.windmill.dev/docs/full_code_apps/frontend',
+    ],
+    authBoundary: 'Windmill bearer token kept strictly in local backend process; never stored in frontend source or browser storage.',
+    frontendTransport: 'Same-origin authenticated API routes forwarding validated requests to http://127.0.0.1:8080/api/w/uor-offline-foundry/*.',
+  },
+  {
+    id: 'WINDMILL_NATIVE_WMILL_TS',
+    label: 'Option B · Windmill-Native Full-Code React App (wmill.ts)',
+    documentationRefs: [
+      'https://www.windmill.dev/docs/full_code_apps/frontend',
+      'https://www.windmill.dev/docs/full_code_apps/deployment',
+    ],
+    authBoundary: 'Windmill session cookie / workspace RBAC managed by Windmill server; generated wmill.ts invokes registered backend runnables only.',
+    frontendTransport: 'Generated wmill.ts RPC bindings compiled into Windmill workspace uor-offline-foundry.',
+  },
+];
+
 /**
  * Documented Host Effects from UOR-Foundation/lexlean-mcp (EFFECTS.md, E1..E10).
  */

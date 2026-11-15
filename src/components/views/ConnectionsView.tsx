@@ -1,6 +1,10 @@
 import React, { useState } from 'react';
 import { RefreshCw, Unplug } from 'lucide-react';
-import { LEXLEAN_MCP_HOST_EFFECTS, WINDMILL_TARGET_CONFIG } from '../../adapters/windmillAdapter';
+import {
+  LEXLEAN_MCP_HOST_EFFECTS,
+  WINDMILL_DEPLOYMENT_OPTIONS,
+  WINDMILL_TARGET_CONFIG,
+} from '../../adapters/windmillAdapter';
 import { foundryService } from '../../services/foundryService';
 import { SystemConnectionRecord } from '../../types/foundry';
 import { StatusTag } from '../StatusTag';
@@ -92,6 +96,37 @@ export const ConnectionsView: React.FC<ConnectionsViewProps> = ({ connections })
             </div>
           </article>
         ))}
+      </section>
+
+      {/* Windmill Full-Code App Deployment Options */}
+      <section className="bg-[#111827] border border-slate-800/90 rounded-lg p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="font-display font-semibold text-sm text-slate-100">
+              Supported Windmill Deployment Architecture Options
+            </h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Grounded in Windmill Full-Code App documentation (workspace: uor-offline-foundry)
+            </p>
+          </div>
+          <StatusTag value="DOCUMENTED" />
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {WINDMILL_DEPLOYMENT_OPTIONS.map((opt) => (
+            <div key={opt.id} className="p-4 bg-[#0B0F17] border border-slate-800 rounded-md space-y-2 text-xs">
+              <div className="font-medium text-slate-100">{opt.label}</div>
+              <p className="text-slate-400 leading-relaxed">
+                <strong className="text-slate-300 font-medium">Auth Boundary:</strong> {opt.authBoundary}
+              </p>
+              <p className="text-slate-400 leading-relaxed">
+                <strong className="text-slate-300 font-medium">Transport:</strong> {opt.frontendTransport}
+              </p>
+              <div className="pt-1 font-mono text-[11px] text-blue-400 truncate">
+                {opt.documentationRefs.join(' · ')}
+              </div>
+            </div>
+          ))}
+        </div>
       </section>
 
       {/* Documented lexlean-mcp Host Effects Contract */}

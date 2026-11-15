@@ -279,6 +279,100 @@ export interface ActivityEvent {
   isSimulated: boolean;
 }
 
+export type IntegrationMode = 'DEMO' | 'LOCAL' | 'ONLINE';
+
+export type ConnectivityProfile =
+  | 'OFFLINE_ONLY'
+  | 'LOCAL_CONNECTED'
+  | 'ONLINE_AUTHORIZED'
+  | 'AIR_GAPPED_TRANSFER';
+
+export type WindmillDeploymentOption =
+  | 'VITE_AUTHENTICATED_LOCAL_PROXY'
+  | 'WINDMILL_NATIVE_WMILL_TS';
+
+export type WindmillJobState =
+  | 'QUEUED'
+  | 'RUNNING'
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'CANCELLED'
+  | 'INTERRUPTED';
+
+export interface WindmillHealthStatus {
+  mode: IntegrationMode;
+  deploymentOption: WindmillDeploymentOption;
+  workspace: string;
+  endpoint: string;
+  reachable: boolean;
+  authenticated: boolean;
+  permissionsValidated: boolean;
+  checkedAt: string;
+  diagnosticMessage: string;
+}
+
+export interface WindmillJobIdentity {
+  jobId: string;
+  workspace: string;
+  flowPath: string;
+  flowVersion: string;
+  submittedAt: string;
+  idempotencyKey: string;
+}
+
+export interface WindmillExecutionRequest {
+  requestId: string;
+  idempotencyKey: string;
+  projectId: string;
+  workflowId: string;
+  flowPath: string;
+  flowVersion: string;
+  sourceRevision: string;
+  operatorApproved: boolean;
+  requestedAt: string;
+}
+
+export interface WindmillJobRecord {
+  jobId: string;
+  projectId: string;
+  workflowId: string;
+  workflowName: string;
+  flowPath: string;
+  flowVersion: string;
+  flowRegisteredInWorkspace: boolean;
+  sourceRevision: string;
+  state: WindmillJobState;
+  startedAt: string;
+  completedAt?: string;
+  durationMs?: number;
+  logs: string[];
+  structuredResult?: Record<string, unknown>;
+  artifactRefs: string[];
+  evidenceRefs: string[];
+  retryAvailable: boolean;
+  idempotencyKey: string;
+  isSyntheticFixture: boolean;
+}
+
+export interface VerifiedEvidenceRef {
+  evidenceId: string;
+  authority: VerificationSuiteAuthority;
+  artifactDigest: string;
+  sourceRevision: string;
+  status: VerificationStatus;
+  verifiedAt?: string;
+  isAuthoritative: boolean;
+}
+
+export interface WindmillConnectionDiagnostic {
+  timestamp: string;
+  endpoint: string;
+  workspace: string;
+  code: 'NOT_CONNECTED' | 'AUTH_NOT_VALIDATED' | 'FLOW_UNREGISTERED' | 'SANDBOX_ISOLATED';
+  message: string;
+  browserNavigatorOnline: boolean;
+}
+
 export type WorkspaceMode = 'chat' | 'preview' | 'build' | 'verify';
 
 export interface PreviewElementRef {
@@ -308,28 +402,38 @@ export interface PreviewConfigState {
   lastUpdatedAt: string;
 }
 
+export type DraftProposalStatus = 'PENDING_REVIEW' | 'APPROVED' | 'REJECTED';
+
 export interface DraftChangeProposal {
   id: string;
   summary: string;
   targetElement?: PreviewElementRef;
   patch: Partial<Omit<PreviewConfigState, 'projectId' | 'lastUpdatedAt'>>;
   addWidget?: PreviewCustomWidget;
+  status?: DraftProposalStatus;
   applied: boolean;
+  decidedAt?: string;
   isSimulated: true;
   authorityNote: string;
 }
+
+export type ChatProviderKind = 'MOCK_PREVIEW_PROVIDER' | 'WINDMILL_LM_STUDIO_RUNNABLE';
+
+export type ChatGenerationState = 'IDLE' | 'GENERATING' | 'CANCELLED' | 'ERROR';
 
 export interface ConversationMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: string;
+  providerKind?: ChatProviderKind;
   referencedElement?: PreviewElementRef;
   draftProposal?: DraftChangeProposal;
   suggestedWorkflowAction?: {
     label: string;
     targetMode: WorkspaceMode;
   };
+  errorDetail?: string;
   isSimulated: boolean;
 }
 
@@ -342,13 +446,93 @@ export interface ConversationThread {
   messages: ConversationMessage[];
 }
 
+export type ArtifactPreviewKind =
+  | 'ui-build'
+  | 'document'
+  | 'json-artifact'
+  | 'workflow-output'
+  | 'image-diagram'
+  | 'validation-report';
+
+export type ArtifactPreviewStatus = 'DEMO' | 'DRAFT' | 'BUILT' | 'VERIFIED' | 'UNAVAILABLE';
+
+export interface ArtifactPreviewPayload {
+  id: string;
+  projectId: string;
+  kind: ArtifactPreviewKind;
+  title: string;
+  subtitle: string;
+  status: ArtifactPreviewStatus;
+  originLabel: string;
+  isSandboxed: true;
+  isAuthoritativeEvidence: false;
+  contentText?: string;
+  jsonPayload?: Record<string, unknown>;
+  diagramNodes?: Array<{ id: string; label: string; gate?: string; status: string }>;
+  reportItems?: Array<{ label: string; authority: string; status: VerificationStatus; detail: string }>;
+  unavailableReason?: string;
+  sourceRevision: string;
+}
+
+export type OperationSyncState =
+  | 'LOCAL_ONLY'
+  | 'PENDING_SYNC'
+  | 'CONFLICT'
+  | 'SYNCED'
+  | 'AIR_GAPPED_EXPORTED';
+
+export interface DurableOperation {
+  operationId: string;
+  projectId: string;
+  kind:
+    | 'PROJECT_DRAFT_SAVE'
+    | 'CONVERSATION_TURN'
+    | 'DRAFT_APPROVAL'
+    | 'WORKFLOW_INTENT_STAGED'
+    | 'AIR_GAPPED_BUNDLE_EXPORT';
+  label: string;
+  revision: number;
+  timestamp: string;
+  syncState: OperationSyncState;
+  autoReplayPermitted: false;
+  note: string;
+}
+
+export interface SyncConflictRecord {
+  conflictId: string;
+  entityType: 'PROJECT' | 'CONVERSATION' | 'DRAFT' | 'ARTIFACT_REF';
+  entityId: string;
+  localRevision: number;
+  remoteRevision: string;
+  detectedAt: string;
+  summary: string;
+  resolution: 'UNRESOLVED' | 'KEEP_LOCAL' | 'ACCEPT_REMOTE_METADATA';
+}
+
+export interface AirGappedTransferBundle {
+  schema: 'uor.foundry.air-gapped-bundle.v1';
+  bundleId: string;
+  exportedAt: string;
+  workspace: string;
+  integrationMode: IntegrationMode;
+  autoReplayPermitted: false;
+  projects: ProjectRecord[];
+  conversations: ConversationThread[];
+  operations: DurableOperation[];
+  artifacts: ArtifactProvenanceRecord[];
+  warning: string;
+}
+
 export interface OfflineQueueItem {
   id: string;
   projectId: string;
-  kind: 'WORKFLOW_DISPATCH' | 'DRAFT_SYNC' | 'VERIFICATION_REQUEST';
+  kind: 'WORKFLOW_DISPATCH' | 'DRAFT_SYNC' | 'VERIFICATION_REQUEST' | 'DRAFT_STAGED';
   label: string;
   targetEndpoint: string;
   createdAt: string;
-  status: 'QUEUED_LOCAL' | 'SIMULATED_LOCAL';
+  status: 'QUEUED_LOCAL' | 'SIMULATED_LOCAL' | 'STAGED_LOCAL';
+  revision?: number;
+  autoReplayPermitted?: false;
 }
+
 

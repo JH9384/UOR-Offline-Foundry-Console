@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { MockPreviewChatProvider } from './adapters/chatProviderAdapter';
 import { IntakeModal } from './components/IntakeModal';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
@@ -23,6 +24,7 @@ import { RepositoriesView } from './components/views/RepositoriesView';
 import { VerificationView } from './components/views/VerificationView';
 import { WorkflowsView } from './components/views/WorkflowsView';
 import {
+  DEMO_WINDMILL_JOB_FIXTURES,
   INITIAL_ACTIVITY,
   INITIAL_AI_ADVISORIES,
   INITIAL_APPROVALS,
@@ -35,27 +37,42 @@ import {
   INITIAL_VERIFICATION_SUITES,
   INITIAL_WORKFLOW_RUNS,
 } from './data/seedFoundryData';
+import {
+  durableLocalStore,
+  DurableStorageDiagnostics,
+  DurableWorkspaceSnapshot,
+} from './services/durableLocalStore';
 import { foundryService } from './services/foundryService';
+import { foundrySyncService } from './services/syncService';
 import {
   ActivityEvent,
   AiAdvisoryEntry,
   ApprovalDecisionRecord,
   ArtifactProvenanceRecord,
+  ChatGenerationState,
+  ConnectivityProfile,
+  ConversationMessage,
   ConversationThread,
+  DurableOperation,
   EngineeringIntakePayload,
+  IntegrationMode,
   NavigationSectionId,
   OfflineQueueItem,
   PreviewConfigState,
   PreviewElementRef,
   ProjectRecord,
+  SyncConflictRecord,
   VerificationSuiteRecord,
+  WindmillExecutionRequest,
+  WindmillJobRecord,
   WorkflowRun,
   WorkspaceMode,
 } from './types/foundry';
 
-const STORAGE_KEY = 'uor_foundry_console_state_v2';
-
-interface PersistedFoundryState {
+interface AppWorkspaceState {
+  revision: number;
+  integrationMode: IntegrationMode;
+  connectivityProfile: ConnectivityProfile;
   projects: ProjectRecord[];
   runs: WorkflowRun[];
   verifications: VerificationSuiteRecord[];
@@ -65,54 +82,53 @@ interface PersistedFoundryState {
   activity: ActivityEvent[];
   conversations: ConversationThread[];
   previews: Record<string, PreviewConfigState>;
+  workflowRequests: WindmillExecutionRequest[];
+  jobReferences: WindmillJobRecord[];
+  operations: DurableOperation[];
+  syncConflicts: SyncConflictRecord[];
   offlineQueue: OfflineQueueItem[];
-  onlineSyncPreference: 'OFFLINE_ONLY' | 'SYNC_STANDBY';
 }
 
-function loadInitialState(): PersistedFoundryState {
-  if (typeof window !== 'undefined') {
-    try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as Partial<PersistedFoundryState>;
-        if (Array.isArray(parsed.projects) && parsed.projects.length > 0) {
-          return {
-            projects: parsed.projects,
-            runs: parsed.runs ?? INITIAL_WORKFLOW_RUNS,
-            verifications: parsed.verifications ?? INITIAL_VERIFICATION_SUITES,
-            artifacts: parsed.artifacts ?? INITIAL_ARTIFACTS,
-            approvals: parsed.approvals ?? INITIAL_APPROVALS,
-            advisories: parsed.advisories ?? INITIAL_AI_ADVISORIES,
-            activity: parsed.activity ?? INITIAL_ACTIVITY,
-            conversations: parsed.conversations ?? INITIAL_CONVERSATIONS,
-            previews: parsed.previews ?? INITIAL_PREVIEW_STATES,
-            offlineQueue: parsed.offlineQueue ?? INITIAL_OFFLINE_QUEUE,
-            onlineSyncPreference: parsed.onlineSyncPreference ?? 'OFFLINE_ONLY',
-          };
-        }
-      }
-    } catch {
-      // Fallback safely to seed data if localStorage is malformed
-    }
-  }
-
+function buildSeedState(partial?: Partial<DurableWorkspaceSnapshot> | null): AppWorkspaceState {
   return {
-    projects: INITIAL_PROJECTS,
-    runs: INITIAL_WORKFLOW_RUNS,
-    verifications: INITIAL_VERIFICATION_SUITES,
-    artifacts: INITIAL_ARTIFACTS,
-    approvals: INITIAL_APPROVALS,
-    advisories: INITIAL_AI_ADVISORIES,
-    activity: INITIAL_ACTIVITY,
-    conversations: INITIAL_CONVERSATIONS,
-    previews: INITIAL_PREVIEW_STATES,
-    offlineQueue: INITIAL_OFFLINE_QUEUE,
-    onlineSyncPreference: 'OFFLINE_ONLY',
+    revision: partial?.revision ?? 1,
+    integrationMode: 'DEMO', // LOCAL/ONLINE stay locked until backend auth & permissions are validated
+    connectivityProfile: partial?.connectivityProfile ?? 'OFFLINE_ONLY',
+    projects:
+      Array.isArray(partial?.projects) && partial.projects.length > 0
+        ? partial.projects
+        : INITIAL_PROJECTS,
+    runs: partial?.runs ?? INITIAL_WORKFLOW_RUNS,
+    verifications: partial?.verifications ?? INITIAL_VERIFICATION_SUITES,
+    artifacts: partial?.artifacts ?? INITIAL_ARTIFACTS,
+    approvals: partial?.approvals ?? INITIAL_APPROVALS,
+    advisories: partial?.advisories ?? INITIAL_AI_ADVISORIES,
+    activity: partial?.activity ?? INITIAL_ACTIVITY,
+    conversations: partial?.conversations ?? INITIAL_CONVERSATIONS,
+    previews: partial?.previews ?? INITIAL_PREVIEW_STATES,
+    workflowRequests: partial?.workflowRequests ?? [],
+    jobReferences: partial?.jobReferences ?? DEMO_WINDMILL_JOB_FIXTURES,
+    operations: partial?.operations ?? [],
+    syncConflicts: partial?.syncConflicts ?? [],
+    offlineQueue: partial?.offlineQueue ?? INITIAL_OFFLINE_QUEUE,
   };
 }
 
+function loadInitialState(): AppWorkspaceState {
+  const fallback = durableLocalStore.loadSyncFallback();
+  return buildSeedState(fallback);
+}
+
 export default function App() {
-  const [state, setState] = useState<PersistedFoundryState>(loadInitialState);
+  const [state, setState] = useState<AppWorkspaceState>(loadInitialState);
+  const [storageDiagnostics, setStorageDiagnostics] = useState<DurableStorageDiagnostics>({
+    backend: typeof window !== 'undefined' && 'indexedDB' in window ? 'indexeddb+localstorage' : 'localstorage-fallback',
+    indexedDbSupported: typeof window !== 'undefined' && 'indexedDB' in window,
+    operationCount: 0,
+    autoReplayPermitted: false,
+    isAuthoritativeDatabase: false,
+  });
+
   const [workspaceShell, setWorkspaceShell] = useState<'studio' | 'advanced'>('studio');
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('chat');
   const [activeSection, setActiveSection] = useState<NavigationSectionId>('overview');
@@ -126,12 +142,64 @@ export default function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [intakeModalOpen, setIntakeModalOpen] = useState(false);
 
+  // Async Chat provider state & cancellation controller
+  const chatProvider = useMemo(() => new MockPreviewChatProvider(), []);
+  const [chatGenState, setChatGenState] = useState<ChatGenerationState>('IDLE');
+  const [chatError, setChatError] = useState<string | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Hydrate from IndexedDB if newer revision exists
   useEffect(() => {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    } catch {
-      // Ignore storage quota issues in restricted browser modes
-    }
+    let active = true;
+    durableLocalStore.loadFromIndexedDb().then((idbSnap) => {
+      if (!active || !idbSnap) return;
+      setState((prev) => {
+        if ((idbSnap.revision ?? 0) > prev.revision) {
+          return buildSeedState(idbSnap);
+        }
+        return prev;
+      });
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Persist workspace snapshot to IndexedDB + localStorage (non-authoritative local cache)
+  useEffect(() => {
+    let cancelled = false;
+    const snapshot: DurableWorkspaceSnapshot = {
+      schemaVersion: 2,
+      revision: state.revision,
+      updatedAt: new Date().toISOString(),
+      authoritativeDatabase: false,
+      persistenceNotice:
+        'Browser IndexedDB/localStorage cache only. Authoritative state lives in controlled Mac Studio repositories & Windmill.',
+      integrationMode: state.integrationMode,
+      connectivityProfile: state.connectivityProfile,
+      projects: state.projects,
+      runs: state.runs,
+      verifications: state.verifications,
+      artifacts: state.artifacts,
+      approvals: state.approvals,
+      advisories: state.advisories,
+      activity: state.activity,
+      conversations: state.conversations,
+      previews: state.previews,
+      workflowRequests: state.workflowRequests,
+      jobReferences: state.jobReferences,
+      operations: state.operations,
+      syncConflicts: state.syncConflicts,
+      offlineQueue: state.offlineQueue,
+    };
+
+    durableLocalStore.saveSnapshot(snapshot).then((diag) => {
+      if (!cancelled) setStorageDiagnostics(diag);
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, [state]);
 
   const activeProject =
@@ -142,6 +210,7 @@ export default function App() {
   );
   const activeThread =
     projectThreads.find((t) => t.id === activeThreadId) ?? projectThreads[0];
+  const activeRun = state.runs.find((r) => r.projectId === activeProject?.id);
 
   const activePreview: PreviewConfigState =
     (activeProject && state.previews[activeProject.id]) ||
@@ -170,7 +239,8 @@ export default function App() {
         {
           id: `msg-init-${Date.now()}`,
           role: 'assistant',
-          content: `Started a fresh local conversation thread for "${activeProject.name}". Select any element in the Live Preview panel or describe a draft change below.`,
+          providerKind: chatProvider.providerKind,
+          content: `Started a fresh local conversation thread for "${activeProject.name}" (${chatProvider.label}). Select any element in the Preview panel or describe a draft change below.`,
           timestamp: now,
           isSimulated: true,
         },
@@ -178,6 +248,7 @@ export default function App() {
     };
     setState((prev) => ({
       ...prev,
+      revision: prev.revision + 1,
       conversations: [newThread, ...prev.conversations],
     }));
     setActiveThreadId(newThread.id);
@@ -198,7 +269,8 @@ export default function App() {
         {
           id: `msg-intake-${Date.now()}`,
           role: 'assistant',
-          content: `Created synthetic project "${created.project.name}" and initialized a simulated workflow. You can inspect the interactive preview on the right, select elements to propose draft changes, or switch to Build / Verify & Release.`,
+          providerKind: chatProvider.providerKind,
+          content: `Created synthetic DEMO project "${created.project.name}" and initialized a simulated workflow fixture. Inspect the sandboxed preview on the right or switch to Build / Verify & Release.`,
           timestamp: now,
           suggestedWorkflowAction: {
             label: 'Inspect Build Pipeline',
@@ -209,32 +281,34 @@ export default function App() {
       ],
     };
 
-    const queuedIntake: OfflineQueueItem = {
-      id: `oq-intake-${Date.now()}`,
-      projectId: created.project.id,
-      kind: 'WORKFLOW_DISPATCH',
-      label: `Queued intake workflow for ${created.project.name}`,
-      targetEndpoint: `http://127.0.0.1:8080/api/w/uor-offline-foundry/jobs/run/f/${created.run.workflowId}`,
-      createdAt: now,
-      status: 'QUEUED_LOCAL',
-    };
+    setState((prev) => {
+      const nextRev = prev.revision + 1;
+      const op = durableLocalStore.createOperation({
+        projectId: created.project.id,
+        kind: 'PROJECT_DRAFT_SAVE',
+        label: `Created synthetic intake draft "${created.project.name}"`,
+        revision: nextRev,
+        note: 'Browser-local demo intake saved; live Windmill untouched.',
+      });
 
-    setState((prev) => ({
-      ...prev,
-      projects: [created.project, ...prev.projects],
-      runs: [created.run, ...prev.runs],
-      verifications: [...created.verifications, ...prev.verifications],
-      artifacts: [created.artifact, ...prev.artifacts],
-      approvals: [...created.approvals, ...prev.approvals],
-      advisories: [created.advisory, ...prev.advisories],
-      activity: [created.activity, ...prev.activity],
-      conversations: [newThread, ...prev.conversations],
-      previews: {
-        ...prev.previews,
-        [created.project.id]: newPreview,
-      },
-      offlineQueue: [queuedIntake, ...prev.offlineQueue],
-    }));
+      return {
+        ...prev,
+        revision: nextRev,
+        projects: [created.project, ...prev.projects],
+        runs: [created.run, ...prev.runs],
+        verifications: [...created.verifications, ...prev.verifications],
+        artifacts: [created.artifact, ...prev.artifacts],
+        approvals: [...created.approvals, ...prev.approvals],
+        advisories: [created.advisory, ...prev.advisories],
+        activity: [created.activity, ...prev.activity],
+        conversations: [newThread, ...prev.conversations],
+        previews: {
+          ...prev.previews,
+          [created.project.id]: newPreview,
+        },
+        operations: [op, ...prev.operations],
+      };
+    });
     setSelectedProjectId(created.project.id);
     setActiveThreadId(newThread.id);
     setReferencedElement(null);
@@ -245,90 +319,198 @@ export default function App() {
     }
   };
 
-  const handleSendChatMessage = (prompt: string) => {
+  const handleSendChatMessage = async (prompt: string) => {
     if (!activeProject) return;
-    const result = foundryService.processConversationTurn({
-      prompt,
-      project: activeProject,
-      preview: activePreview,
-      verifications: state.verifications,
+    const trimmed = prompt.trim();
+    if (!trimmed) return;
+
+    const now = new Date().toISOString();
+    const userMessage: ConversationMessage = {
+      id: `msg-u-${Date.now()}`,
+      role: 'user',
+      content: trimmed,
+      timestamp: now,
       referencedElement: referencedElement ?? undefined,
-    });
+      isSimulated: false,
+    };
 
     const targetThreadId = activeThread?.id;
-    const now = new Date().toISOString();
+    let resolvedThreadId = targetThreadId;
 
+    // Immediately append user message to conversation
     setState((prev) => {
       let updatedConversations: ConversationThread[];
       if (targetThreadId && prev.conversations.some((t) => t.id === targetThreadId)) {
         updatedConversations = prev.conversations.map((t) =>
           t.id === targetThreadId
-            ? {
-                ...t,
-                updatedAt: now,
-                messages: [...t.messages, result.userMessage, result.assistantMessage],
-              }
+            ? { ...t, updatedAt: now, messages: [...t.messages, userMessage] }
             : t
         );
       } else {
         const createdThread: ConversationThread = {
           id: `thread-${Date.now()}`,
           projectId: activeProject.id,
-          title: prompt.slice(0, 36),
+          title: trimmed.slice(0, 36),
           createdAt: now,
           updatedAt: now,
-          messages: [result.userMessage, result.assistantMessage],
+          messages: [userMessage],
         };
+        resolvedThreadId = createdThread.id;
         updatedConversations = [createdThread, ...prev.conversations];
         setActiveThreadId(createdThread.id);
       }
-
       return {
         ...prev,
+        revision: prev.revision + 1,
         conversations: updatedConversations,
-        offlineQueue: result.queuedItem
-          ? [result.queuedItem, ...prev.offlineQueue]
-          : prev.offlineQueue,
       };
     });
 
+    const selectedRef = referencedElement ?? undefined;
     setReferencedElement(null);
+    setChatError(null);
+    setChatGenState('GENERATING');
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    try {
+      const response = await chatProvider.generateReply(
+        {
+          prompt: trimmed,
+          project: activeProject,
+          preview: activePreview,
+          verifications: state.verifications,
+          referencedElement: selectedRef,
+          history: activeThread?.messages ?? [],
+        },
+        { signal: controller.signal }
+      );
+
+      setChatGenState('IDLE');
+      setState((prev) => {
+        const nextRev = prev.revision + 1;
+        const op = durableLocalStore.createOperation({
+          projectId: activeProject.id,
+          kind: 'CONVERSATION_TURN',
+          label: response.stagedOperationNote ?? `Chat turn recorded (${response.providerKind})`,
+          revision: nextRev,
+          note: 'Local conversation turn cached; no external sync.',
+        });
+
+        return {
+          ...prev,
+          revision: nextRev,
+          conversations: prev.conversations.map((t) =>
+            t.id === resolvedThreadId
+              ? {
+                  ...t,
+                  updatedAt: response.assistantMessage.timestamp,
+                  messages: [...t.messages, response.assistantMessage],
+                }
+              : t
+          ),
+          operations: [op, ...prev.operations],
+        };
+      });
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        setChatGenState('CANCELLED');
+      } else {
+        setChatGenState('ERROR');
+        setChatError(
+          err instanceof Error ? err.message : 'Chat provider failed to generate response.'
+        );
+      }
+    } finally {
+      abortControllerRef.current = null;
+    }
   };
 
-  const handleApplyDraftProposal = (messageId: string, proposalId: string) => {
+  const handleCancelGeneration = () => {
+    abortControllerRef.current?.abort();
+  };
+
+  const handleApproveDraftProposal = (messageId: string, proposalId: string) => {
     if (!activeProject) return;
+    const now = new Date().toISOString();
     setState((prev) => {
       const currentPreview =
         prev.previews[activeProject.id] ??
         foundryService.buildPreviewStateForProject(activeProject);
 
       let nextPreview = currentPreview;
+      let approvedSummary = 'Draft proposal';
+
       const updatedConversations = prev.conversations.map((thread) => ({
         ...thread,
         messages: thread.messages.map((msg) => {
           if (msg.id === messageId && msg.draftProposal?.id === proposalId) {
+            approvedSummary = msg.draftProposal.summary;
             nextPreview = foundryService.applyDraftProposalToPreview(
               currentPreview,
               msg.draftProposal
             );
             return {
               ...msg,
-              draftProposal: { ...msg.draftProposal, applied: true },
+              draftProposal: {
+                ...msg.draftProposal,
+                status: 'APPROVED' as const,
+                applied: true,
+                decidedAt: now,
+              },
             };
           }
           return msg;
         }),
       }));
 
+      const nextRev = prev.revision + 1;
+      const op = durableLocalStore.createOperation({
+        projectId: activeProject.id,
+        kind: 'DRAFT_APPROVAL',
+        label: `Operator approved draft: ${approvedSummary}`,
+        revision: nextRev,
+        note: 'Applied to sandboxed preview only; authoritative sources & verification unchanged.',
+      });
+
       return {
         ...prev,
+        revision: nextRev,
         conversations: updatedConversations,
         previews: {
           ...prev.previews,
           [activeProject.id]: nextPreview,
         },
+        operations: [op, ...prev.operations],
       };
     });
+  };
+
+  const handleRejectDraftProposal = (messageId: string, proposalId: string) => {
+    if (!activeProject) return;
+    const now = new Date().toISOString();
+    setState((prev) => ({
+      ...prev,
+      revision: prev.revision + 1,
+      conversations: prev.conversations.map((thread) => ({
+        ...thread,
+        messages: thread.messages.map((msg) => {
+          if (msg.id === messageId && msg.draftProposal?.id === proposalId) {
+            return {
+              ...msg,
+              draftProposal: {
+                ...msg.draftProposal,
+                status: 'REJECTED' as const,
+                applied: false,
+                decidedAt: now,
+              },
+            };
+          }
+          return msg;
+        }),
+      })),
+    }));
   };
 
   const handleAdvanceSimulation = (runId: string) => {
@@ -343,6 +525,7 @@ export default function App() {
 
       return {
         ...prev,
+        revision: prev.revision + 1,
         runs: prev.runs.map((r) => (r.id === updatedRun.id ? updatedRun : r)),
         projects: prev.projects.map((p) => (p.id === updatedProject.id ? updatedProject : p)),
         verifications: updatedVerifications,
@@ -351,23 +534,72 @@ export default function App() {
     });
   };
 
-  const handleQueueWindmillRun = (project: ProjectRecord, run?: WorkflowRun) => {
+  const handleStageWorkflowIntent = (
+    project: ProjectRecord,
+    idempotencyKey: string,
+    run?: WorkflowRun
+  ): boolean => {
+    if (state.workflowRequests.some((req) => req.idempotencyKey === idempotencyKey)) {
+      return false;
+    }
     const now = new Date().toISOString();
-    const item: OfflineQueueItem = {
-      id: `oq-wf-${Date.now()}`,
+    const request: WindmillExecutionRequest = {
+      requestId: `req-${Date.now()}`,
+      idempotencyKey,
       projectId: project.id,
-      kind: 'WORKFLOW_DISPATCH',
-      label: `Windmill run queued: ${project.name} (${run?.currentStageId.toUpperCase() ?? 'INTAKE'})`,
-      targetEndpoint:
-        run?.windmillTargetPath ??
-        `http://127.0.0.1:8080/api/w/uor-offline-foundry/jobs/run/f/${project.workflowId}`,
-      createdAt: now,
-      status: 'QUEUED_LOCAL',
+      workflowId: project.workflowId,
+      flowPath: run?.windmillTargetPath ?? project.workflowId,
+      flowVersion: '0.4.0-proposed',
+      sourceRevision: project.sourceRevision,
+      operatorApproved: false,
+      requestedAt: now,
     };
-    setState((prev) => ({
-      ...prev,
-      offlineQueue: [item, ...prev.offlineQueue],
-    }));
+
+    setState((prev) => {
+      const nextRev = prev.revision + 1;
+      const op = durableLocalStore.createOperation({
+        projectId: project.id,
+        kind: 'WORKFLOW_INTENT_STAGED',
+        label: `Staged local workflow intent (${project.name})`,
+        revision: nextRev,
+        note: `Idempotency key ${idempotencyKey}. Auto-replay disabled; requires validated LOCAL runtime.`,
+      });
+      return {
+        ...prev,
+        revision: nextRev,
+        workflowRequests: [request, ...prev.workflowRequests],
+        operations: [op, ...prev.operations],
+      };
+    });
+    return true;
+  };
+
+  const handleExportAirGappedBundle = (): string => {
+    const bundle = foundrySyncService.buildAirGappedBundle({
+      integrationMode: state.integrationMode,
+      projects: state.projects,
+      conversations: state.conversations,
+      operations: state.operations,
+      artifacts: state.artifacts,
+    });
+    const filename = foundrySyncService.downloadAirGappedBundle(bundle);
+    setState((prev) => {
+      const nextRev = prev.revision + 1;
+      const op = durableLocalStore.createOperation({
+        projectId: activeProject?.id ?? 'workspace',
+        kind: 'AIR_GAPPED_BUNDLE_EXPORT',
+        label: `Exported air-gapped transfer bundle (${filename})`,
+        revision: nextRev,
+        syncState: 'AIR_GAPPED_EXPORTED',
+        note: 'Sanitized offline JSON bundle downloaded.',
+      });
+      return {
+        ...prev,
+        revision: nextRev,
+        operations: [op, ...prev.operations],
+      };
+    });
+    return filename;
   };
 
   const handleGenerateAdvisory = (
@@ -390,6 +622,7 @@ export default function App() {
     };
     setState((prev) => ({
       ...prev,
+      revision: prev.revision + 1,
       advisories: [entry, ...prev.advisories],
       activity: [activityEvent, ...prev.activity],
     }));
@@ -430,21 +663,23 @@ export default function App() {
               activeProject={activeProject}
               mode={workspaceMode}
               onSelectMode={setWorkspaceMode}
-              offlineQueue={state.offlineQueue}
-              onlineSyncPreference={state.onlineSyncPreference}
-              onToggleOnlineSync={() =>
+              integrationMode={state.integrationMode}
+              connectivityProfile={state.connectivityProfile}
+              onSelectConnectivityProfile={(profile) =>
                 setState((prev) => ({
                   ...prev,
-                  onlineSyncPreference:
-                    prev.onlineSyncPreference === 'OFFLINE_ONLY'
-                      ? 'SYNC_STANDBY'
-                      : 'OFFLINE_ONLY',
+                  revision: prev.revision + 1,
+                  connectivityProfile: profile,
                 }))
               }
-              onClearQueue={() =>
+              operations={state.operations}
+              storageDiagnostics={storageDiagnostics}
+              onExportAirGappedBundle={handleExportAirGappedBundle}
+              onClearOperations={() =>
                 setState((prev) => ({
                   ...prev,
-                  offlineQueue: [],
+                  revision: prev.revision + 1,
+                  operations: [],
                 }))
               }
               onOpenMobileMenu={() => setMobileMenuOpen(true)}
@@ -458,10 +693,20 @@ export default function App() {
                     <ChatPanel
                       project={activeProject}
                       thread={activeThread}
+                      integrationMode={state.integrationMode}
+                      providerKind={chatProvider.providerKind}
+                      generationState={chatGenState}
+                      generationError={chatError}
                       referencedElement={referencedElement}
                       onClearReferencedElement={() => setReferencedElement(null)}
+                      onDismissError={() => {
+                        setChatGenState('IDLE');
+                        setChatError(null);
+                      }}
                       onSendMessage={handleSendChatMessage}
-                      onApplyDraftProposal={handleApplyDraftProposal}
+                      onCancelGeneration={handleCancelGeneration}
+                      onApproveDraftProposal={handleApproveDraftProposal}
+                      onRejectDraftProposal={handleRejectDraftProposal}
                       onSwitchMode={setWorkspaceMode}
                     />
                   </div>
@@ -469,6 +714,10 @@ export default function App() {
                     <LivePreviewPanel
                       project={activeProject}
                       preview={activePreview}
+                      integrationMode={state.integrationMode}
+                      run={activeRun}
+                      artifacts={state.artifacts}
+                      verifications={state.verifications}
                       selectedElement={referencedElement}
                       onSelectElement={(el) => setReferencedElement(el)}
                       onSwitchMode={setWorkspaceMode}
@@ -482,6 +731,10 @@ export default function App() {
                   <LivePreviewPanel
                     project={activeProject}
                     preview={activePreview}
+                    integrationMode={state.integrationMode}
+                    run={activeRun}
+                    artifacts={state.artifacts}
+                    verifications={state.verifications}
                     selectedElement={referencedElement}
                     onSelectElement={(el) => {
                       setReferencedElement(el);
@@ -496,10 +749,13 @@ export default function App() {
                 <BuildModePanel
                   project={activeProject}
                   projects={state.projects}
+                  integrationMode={state.integrationMode}
                   runs={state.runs}
+                  jobRecords={state.jobReferences}
                   artifacts={state.artifacts}
+                  operations={state.operations}
                   onAdvanceSimulation={handleAdvanceSimulation}
-                  onQueueWindmillRun={handleQueueWindmillRun}
+                  onStageWorkflowIntent={handleStageWorkflowIntent}
                   onOpenIntake={() => setIntakeModalOpen(true)}
                   onOpenAdvancedSection={openAdvancedSection}
                 />
@@ -510,6 +766,7 @@ export default function App() {
                   project={activeProject}
                   projects={state.projects}
                   verifications={state.verifications}
+                  artifacts={state.artifacts}
                   approvals={state.approvals}
                   onSelectProject={handleSelectProject}
                   onOpenAdvancedSection={openAdvancedSection}

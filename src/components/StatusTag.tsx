@@ -12,11 +12,15 @@ import {
 import {
   ApprovalDisposition,
   ArtifactLifecycleBadge,
+  ArtifactPreviewStatus,
   ConnectionStatus,
+  DraftProposalStatus,
   EpistemicCondition,
+  IntegrationMode,
   ProjectLifecycleStatus,
   StageRunStatus,
   VerificationStatus,
+  WindmillJobState,
 } from '../types/foundry';
 
 type StatusValue =
@@ -27,6 +31,10 @@ type StatusValue =
   | ProjectLifecycleStatus
   | ApprovalDisposition
   | ArtifactLifecycleBadge
+  | IntegrationMode
+  | ArtifactPreviewStatus
+  | WindmillJobState
+  | DraftProposalStatus
   | 'QUEUED'
   | 'SIMULATED'
   | 'BLOCKED';
@@ -46,8 +54,12 @@ export const StatusTag: React.FC<StatusTagProps> = ({ value, className = '' }) =
     case 'DOCUMENTED':
     case 'APPROVED_FOR_TEST_SIMULATION':
     case 'Validated':
+    case 'VERIFIED':
+    case 'APPROVED':
+    case 'LOCAL':
+    case 'ONLINE':
       colorClasses =
-        value === 'DOCUMENTED'
+        value === 'DOCUMENTED' || value === 'LOCAL'
           ? 'border-sky-500/30 bg-sky-950/40 text-sky-300'
           : 'border-emerald-500/35 bg-emerald-950/40 text-emerald-300';
       Icon = CheckCircle2;
@@ -55,6 +67,7 @@ export const StatusTag: React.FC<StatusTagProps> = ({ value, className = '' }) =
     case 'FAIL':
     case 'FAILED':
     case 'REJECTED':
+    case 'CANCELLED':
       colorClasses = 'border-rose-500/40 bg-rose-950/45 text-rose-300';
       Icon = XCircle;
       break;
@@ -64,25 +77,31 @@ export const StatusTag: React.FC<StatusTagProps> = ({ value, className = '' }) =
     case 'RELEASE BLOCKED':
     case 'PENDING VERIFICATION':
     case 'Pending':
+    case 'INTERRUPTED':
+    case 'PENDING_REVIEW':
       colorClasses = 'border-amber-500/35 bg-amber-950/35 text-amber-300';
       Icon =
         value === 'BLOCKED' || value === 'RELEASE BLOCKED'
           ? Lock
-          : value === 'Pending'
+          : value === 'Pending' || value === 'PENDING_REVIEW'
             ? Clock
             : ShieldAlert;
       break;
     case 'Superseded':
+    case 'BUILT':
       colorClasses = 'border-violet-500/35 bg-violet-950/35 text-violet-300';
       Icon = History;
       break;
     case 'NOT CONNECTED':
+    case 'UNAVAILABLE':
       colorClasses = 'border-rose-500/30 bg-rose-950/30 text-rose-300';
       Icon = Unplug;
       break;
     case 'PROPOSED':
     case 'SIMULATED':
     case 'SIMULATION COMPLETE':
+    case 'DEMO':
+    case 'DRAFT':
       colorClasses = 'border-indigo-500/35 bg-indigo-950/40 text-indigo-300';
       Icon = AlertTriangle;
       break;
@@ -97,6 +116,7 @@ export const StatusTag: React.FC<StatusTagProps> = ({ value, className = '' }) =
     case 'INTAKE':
     case 'VERIFICATION PENDING':
     case 'REVIEW REQUIRED':
+    case 'QUEUED':
     default:
       colorClasses = 'border-slate-700 bg-slate-900 text-slate-300';
       Icon = Clock;

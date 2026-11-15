@@ -1,26 +1,35 @@
 import React, { useState } from 'react';
 import {
-  CloudOff,
+  Download,
+  Lock,
   Menu,
   SlidersHorizontal,
   Trash2,
   WifiOff,
 } from 'lucide-react';
+import { DurableStorageDiagnostics } from '../../services/durableLocalStore';
+import { foundrySyncService } from '../../services/syncService';
 import {
+  ConnectivityProfile,
+  DurableOperation,
+  IntegrationMode,
   NavigationSectionId,
-  OfflineQueueItem,
   ProjectRecord,
   WorkspaceMode,
 } from '../../types/foundry';
+import { StatusTag } from '../StatusTag';
 
 interface WorkspaceTopBarProps {
   activeProject?: ProjectRecord;
   mode: WorkspaceMode;
   onSelectMode: (mode: WorkspaceMode) => void;
-  offlineQueue: OfflineQueueItem[];
-  onlineSyncPreference: 'OFFLINE_ONLY' | 'SYNC_STANDBY';
-  onToggleOnlineSync: () => void;
-  onClearQueue: () => void;
+  integrationMode: IntegrationMode;
+  connectivityProfile: ConnectivityProfile;
+  onSelectConnectivityProfile: (profile: ConnectivityProfile) => void;
+  operations: DurableOperation[];
+  storageDiagnostics: DurableStorageDiagnostics;
+  onExportAirGappedBundle: () => string;
+  onClearOperations: () => void;
   onOpenMobileMenu: () => void;
   onOpenAdvancedSection: (section: NavigationSectionId) => void;
 }
@@ -32,18 +41,45 @@ const MODES: Array<{ id: WorkspaceMode; label: string }> = [
   { id: 'verify', label: 'Verify & Release' },
 ];
 
+const CONNECTIVITY_PROFILES: Array<{
+  id: ConnectivityProfile;
+  label: string;
+  locked: boolean;
+}> = [
+  { id: 'OFFLINE_ONLY', label: 'Offline-Only', locked: false },
+  { id: 'AIR_GAPPED_TRANSFER', label: 'Air-Gapped Transfer', locked: false },
+  { id: 'LOCAL_CONNECTED', label: 'Local Connected (Auth Required)', locked: true },
+  { id: 'ONLINE_AUTHORIZED', label: 'Online Authorized (Locked)', locked: true },
+];
+
 export const WorkspaceTopBar: React.FC<WorkspaceTopBarProps> = ({
   activeProject,
   mode,
   onSelectMode,
-  offlineQueue,
-  onlineSyncPreference,
-  onToggleOnlineSync,
-  onClearQueue,
+  integrationMode,
+  connectivityProfile,
+  onSelectConnectivityProfile,
+  operations,
+  storageDiagnostics,
+  onExportAirGappedBundle,
+  onClearOperations,
   onOpenMobileMenu,
   onOpenAdvancedSection,
 }) => {
   const [runtimeOpen, setRuntimeOpen] = useState(false);
+  const [bundleNotice, setBundleNotice] = useState<string | null>(null);
+
+  const policy = foundrySyncService.evaluateConnectivityPolicy({
+    profile: connectivityProfile,
+    integrationMode,
+    localWindmillValidated: false,
+    onlineAuthValidated: false,
+  });
+
+  const handleBundleDownload = () => {
+    const filename = onExportAirGappedBundle();
+    setBundleNotice(`Exported ${filename}`);
+  };
 
   return (
     <header className="h-14 px-4 lg:px-6 border-b border-slate-800/80 bg-[#0D121B] flex items-center justify-between gap-4 shrink-0 relative z-30">
@@ -57,10 +93,11 @@ export const WorkspaceTopBar: React.FC<WorkspaceTopBarProps> = ({
         >
           <Menu className="w-5 h-5" />
         </button>
-        <div className="min-w-0">
+        <div className="flex items-center gap-2 min-w-0">
           <h1 className="font-display font-semibold text-sm text-slate-100 truncate">
             {activeProject?.name ?? 'UOR Offline Foundry'}
           </h1>
+          <StatusTag value={integrationMode} className="hidden md:inline-flex" />
         </div>
       </div>
 
@@ -88,7 +125,7 @@ export const WorkspaceTopBar: React.FC<WorkspaceTopBarProps> = ({
         })}
       </nav>
 
-      {/* Zone 3: Offline-First Runtime Indicator */}
+      {/* Zone 3: Runtime, Persistence & Sync Indicator */}
       <div className="relative shrink-0">
         <button
           type="button"
@@ -97,60 +134,102 @@ export const WorkspaceTopBar: React.FC<WorkspaceTopBarProps> = ({
           className="inline-flex items-center gap-2 px-3 py-1.5 text-xs bg-[#111827] hover:bg-slate-800/90 border border-slate-700/80 rounded-md text-slate-200 transition-colors whitespace-nowrap shrink-0"
         >
           <WifiOff className="w-3.5 h-3.5 text-amber-400 shrink-0" aria-hidden="true" />
-          <span className="hidden sm:inline">Offline Mode</span>
-          {offlineQueue.length > 0 && (
+          <span className="hidden sm:inline">
+            {connectivityProfile === 'AIR_GAPPED_TRANSFER' ? 'Air-Gapped' : 'Offline Mode'}
+          </span>
+          {operations.length > 0 && (
             <span className="font-mono text-[11px] text-blue-300 tabular-nums">
-              · {offlineQueue.length} queued
+              · {operations.length} ops
             </span>
           )}
         </button>
 
         {runtimeOpen && (
-          <div className="absolute right-0 mt-2 w-80 bg-[#111827] border border-slate-700/80 rounded-lg p-4 space-y-3.5 shadow-xl z-40">
+          <div className="absolute right-0 mt-2 w-96 max-w-[calc(100vw-2rem)] bg-[#111827] border border-slate-700/80 rounded-lg p-4 space-y-3.5 shadow-xl z-40">
             <div className="flex items-center justify-between pb-2.5 border-b border-slate-800">
               <span className="text-xs font-semibold text-slate-100">
-                Local Runtime &amp; Sync Status
+                Runtime, Persistence &amp; Sync Boundary
               </span>
-              <span className="font-mono text-[11px] text-emerald-300">
-                Local Storage Active
-              </span>
+              <StatusTag value={policy.integrationMode} />
             </div>
 
-            <dl className="space-y-2 text-xs">
+            <dl className="space-y-1.5 text-xs">
               <div className="flex items-center justify-between gap-2">
-                <dt className="text-slate-400">Windmill (127.0.0.1:8080)</dt>
+                <dt className="text-slate-400">Windmill (uor-offline-foundry)</dt>
                 <dd className="font-mono text-rose-300">NOT CONNECTED</dd>
               </div>
               <div className="flex items-center justify-between gap-2">
-                <dt className="text-slate-400">LM Studio Inference</dt>
+                <dt className="text-slate-400">LM Studio (via Windmill)</dt>
                 <dd className="font-mono text-rose-300">NOT CONNECTED</dd>
               </div>
               <div className="flex items-center justify-between gap-2">
-                <dt className="text-slate-400">Optional Online Sync</dt>
-                <dd>
-                  <button
-                    type="button"
-                    onClick={onToggleOnlineSync}
-                    className="font-mono text-[11px] px-2 py-0.5 border border-slate-700 hover:border-slate-600 rounded text-slate-200 inline-flex items-center gap-1"
-                  >
-                    <CloudOff className="w-3 h-3" aria-hidden="true" />
-                    <span>
-                      {onlineSyncPreference === 'OFFLINE_ONLY' ? 'Disabled' : 'Standby'}
-                    </span>
-                  </button>
+                <dt className="text-slate-400">Browser Network (navigator)</dt>
+                <dd className="font-mono text-slate-300">
+                  {policy.browserNavigatorOnline ? 'Online (Non-Authoritative)' : 'Offline'}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <dt className="text-slate-400">Local Cache Adapter</dt>
+                <dd className="font-mono text-emerald-300 text-right">
+                  {storageDiagnostics.backend}
                 </dd>
               </div>
             </dl>
 
+            {/* Connectivity Profile Selector */}
+            <div className="pt-2.5 border-t border-slate-800 space-y-1.5">
+              <div className="text-[11px] text-slate-400 font-medium">
+                Connectivity Profile (Auto-replay: Disabled)
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {CONNECTIVITY_PROFILES.map((p) => {
+                  const selected = connectivityProfile === p.id;
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => onSelectConnectivityProfile(p.id)}
+                      className={`px-2.5 py-1.5 text-[11px] rounded border text-left flex items-center justify-between gap-1 transition-colors ${
+                        selected
+                          ? 'bg-blue-950/40 border-blue-500/40 text-blue-200'
+                          : 'bg-[#0B0F17] border-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      <span className="truncate">{p.label}</span>
+                      {p.locked && <Lock className="w-3 h-3 shrink-0 text-amber-400" aria-hidden="true" />}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-slate-400 leading-relaxed">{policy.explanation}</p>
+            </div>
+
+            {/* Air-Gapped Transfer Export */}
+            <div className="pt-2.5 border-t border-slate-800 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={handleBundleDownload}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] font-medium bg-[#0B0F17] hover:bg-slate-800 border border-slate-700 rounded text-slate-200 transition-colors"
+              >
+                <Download className="w-3 h-3 text-blue-400" aria-hidden="true" />
+                <span>Export Air-Gapped Bundle</span>
+              </button>
+              <span className="text-[10px] font-mono text-slate-500">No tokens included</span>
+            </div>
+            {bundleNotice && (
+              <div className="text-[11px] font-mono text-blue-300 truncate">{bundleNotice}</div>
+            )}
+
+            {/* Durable Local Operations */}
             <div className="pt-2.5 border-t border-slate-800 space-y-2">
               <div className="flex items-center justify-between text-xs">
                 <span className="text-slate-400">
-                  Queued Local Actions ({offlineQueue.length})
+                  Durable Local Operations ({operations.length})
                 </span>
-                {offlineQueue.length > 0 && (
+                {operations.length > 0 && (
                   <button
                     type="button"
-                    onClick={onClearQueue}
+                    onClick={onClearOperations}
                     className="text-[11px] text-slate-400 hover:text-rose-300 inline-flex items-center gap-1"
                   >
                     <Trash2 className="w-3 h-3" aria-hidden="true" />
@@ -159,20 +238,20 @@ export const WorkspaceTopBar: React.FC<WorkspaceTopBarProps> = ({
                 )}
               </div>
 
-              {offlineQueue.length === 0 ? (
+              {operations.length === 0 ? (
                 <p className="text-[11px] text-slate-500">
-                  No local actions queued for Mac Studio Windmill.
+                  No local operations recorded yet.
                 </p>
               ) : (
-                <ul className="space-y-1.5 max-h-36 overflow-y-auto">
-                  {offlineQueue.slice(0, 5).map((item) => (
+                <ul className="space-y-1.5 max-h-32 overflow-y-auto">
+                  {operations.slice(0, 4).map((op) => (
                     <li
-                      key={item.id}
+                      key={op.operationId}
                       className="p-2 bg-[#0B0F17] border border-slate-800 rounded text-[11px]"
                     >
-                      <div className="text-slate-200 truncate">{item.label}</div>
+                      <div className="text-slate-200 truncate">{op.label}</div>
                       <div className="font-mono text-slate-500 truncate mt-0.5">
-                        {item.kind} · {item.status}
+                        rev {op.revision} · {op.syncState}
                       </div>
                     </li>
                   ))}
@@ -190,7 +269,7 @@ export const WorkspaceTopBar: React.FC<WorkspaceTopBarProps> = ({
                 className="text-blue-400 hover:text-blue-300 inline-flex items-center gap-1"
               >
                 <SlidersHorizontal className="w-3 h-3" aria-hidden="true" />
-                <span>Connections</span>
+                <span>Connections &amp; Adapters</span>
               </button>
               <button
                 type="button"
@@ -200,7 +279,7 @@ export const WorkspaceTopBar: React.FC<WorkspaceTopBarProps> = ({
                 }}
                 className="text-blue-400 hover:text-blue-300"
               >
-                Repository References
+                Repository Boundaries
               </button>
             </div>
           </div>

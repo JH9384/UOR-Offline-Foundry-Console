@@ -10,6 +10,7 @@ import {
   ProjectRecord,
   SystemConnectionRecord,
   VerificationSuiteRecord,
+  WindmillJobRecord,
   WorkflowDefinition,
   WorkflowRun,
   WorkflowStageTemplate,
@@ -966,11 +967,80 @@ export const INITIAL_OFFLINE_QUEUE: OfflineQueueItem[] = [
   {
     id: 'oq-seed-01',
     projectId: 'proj-prism-calc',
-    kind: 'VERIFICATION_REQUEST',
-    label: 'Run local `just vv` twice consecutively on Mac Studio',
-    targetEndpoint: 'http://127.0.0.1:8080/api/w/uor-offline-foundry/jobs/run/f/f/uor_foundry/prismpm_closed_model_delivery',
+    kind: 'DRAFT_STAGED',
+    label: 'Local draft note: evaluate `just vv` twice consecutively on Mac Studio',
+    targetEndpoint: 'local://uor_foundry_durable_v1/drafts',
     createdAt: '2026-11-15T08:40:00Z',
-    status: 'QUEUED_LOCAL',
+    status: 'STAGED_LOCAL',
+    revision: 1,
+    autoReplayPermitted: false,
   },
 ];
+
+/**
+ * Strictly synthetic DEMO execution fixtures for Build mode preview.
+ * Separated from genuine Windmill execution records (`isSyntheticFixture: true`).
+ * Never represents live Mac Studio execution or registered Windmill flows.
+ */
+export const DEMO_WINDMILL_JOB_FIXTURES: WindmillJobRecord[] = [
+  {
+    jobId: 'demo-fixture-wm-0192',
+    projectId: 'proj-prism-calc',
+    workflowId: 'wf-prismpm-delivery',
+    workflowName: 'PrismPM Closed-Model Build & Hologram Packaging',
+    flowPath: 'f/uor_foundry/prismpm_closed_model_delivery',
+    flowVersion: '0.4.0-demo-fixture',
+    flowRegisteredInWorkspace: false,
+    sourceRevision: 'prismpm/main@ee207ff1',
+    state: 'INTERRUPTED',
+    startedAt: '2026-11-15T08:38:00Z',
+    completedAt: '2026-11-15T08:40:00Z',
+    durationMs: 120000,
+    logs: [
+      '[DEMO FIXTURE] Flow path f/uor_foundry/prismpm_closed_model_delivery is a proposed target (unregistered).',
+      '[DEMO FIXTURE] Stage 01 Intake (REGISTER): simulated closure metadata validated.',
+      '[DEMO FIXTURE] Stage 02..04: synthetic fixture markers only; no real Cargo/Lean processes executed.',
+      '[FAIL-CLOSED] Halted prior to Release Authorization: Forge Kernel & PP2011 Browser profile NOT VERIFIED.',
+    ],
+    structuredResult: {
+      fixtureMode: 'BROWSER_DEMO_ONLY',
+      releaseGate: 'BLOCKED',
+      missingAuthorities: ['Forge Kernel', 'Browser & Identity Acceptance Suites'],
+    },
+    artifactRefs: ['art-prism-crate', 'art-prism-holo'],
+    evidenceRefs: ['ev-prismpm-doc', 'ev-forge-unverified', 'ev-browser-unverified'],
+    retryAvailable: false,
+    idempotencyKey: 'demo-idem-prism-calc-v1',
+    isSyntheticFixture: true,
+  },
+  {
+    jobId: 'demo-fixture-wm-0188',
+    projectId: 'proj-lexlean-mcp',
+    workflowId: 'wf-lexlean-formal',
+    workflowName: 'LexLean Formal Proof & Production Export',
+    flowPath: 'f/uor_foundry/lexlean_formal_verification',
+    flowVersion: '0.4.0-demo-fixture',
+    flowRegisteredInWorkspace: false,
+    sourceRevision: 'lexlean-mcp/main@e0b74b8',
+    state: 'RUNNING',
+    startedAt: '2026-11-15T08:42:00Z',
+    durationMs: 42100,
+    logs: [
+      '[DEMO FIXTURE] Flow path f/uor_foundry/lexlean_formal_verification is proposed (not registered on live Windmill).',
+      '[DEMO FIXTURE] Declared host effects E1..E10 mapped from UOR-Foundation/lexlean-mcp/EFFECTS.md.',
+      '[DEMO FIXTURE] Awaiting simulated Verify & Human Review steps.',
+    ],
+    structuredResult: {
+      fixtureMode: 'BROWSER_DEMO_ONLY',
+      declaredEffects: ['E1..E10'],
+      upstreamOpenIssues: ['#11', '#17'],
+    },
+    artifactRefs: ['art-lexlean-ir'],
+    evidenceRefs: ['ev-lexlean-doc'],
+    retryAvailable: false,
+    idempotencyKey: 'demo-idem-lexlean-mcp-v1',
+    isSyntheticFixture: true,
+  },
+];
+
 
