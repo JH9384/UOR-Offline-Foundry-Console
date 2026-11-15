@@ -78,6 +78,18 @@ export const ENGINEERING_COMPONENTS: EngineeringComponent[] = [
     notes: 'Re-exports uor-foundation + Layer-3 axes (crypto, numerics, tensor, fhe) and uor-prism-verify replay façade.',
   },
   {
+    id: 'uorust-translator',
+    name: 'UORust Cargo Workspace Translator (model -> Prism/LexLean)',
+    repositoryName: 'afflom/UORust',
+    repositoryUrl: 'https://github.com/afflom/UORust',
+    ownershipBoundary: 'Cargo AST & LexLean Lifting Subsystem (Independent)',
+    epistemicCondition: 'DOCUMENTED',
+    documentedCommand: 'cargo test --workspace && just vv',
+    defaultWorkflowId: 'wf-uorust-modeling',
+    supportedFamilies: ['formal-verification', 'application'],
+    notes: 'Deterministic route table & typed source-span refusals (UE-01..UE-16). Browser preview models targets without executing Cargo or build.rs.',
+  },
+  {
     id: 'forge-kernel',
     name: 'UOR Forge Kernel ABI & Acceptance',
     repositoryName: 'Local / Restricted UOR Boundary',
@@ -213,6 +225,16 @@ export const WORKFLOW_CATALOG: WorkflowDefinition[] = [
     windmillFlowPath: 'f/uor_foundry/lexlean_formal_verification',
     stages: STANDARD_EIGHT_STAGES,
   },
+  {
+    id: 'wf-uorust-modeling',
+    name: 'UORust Cargo Workspace -> Prism Projection',
+    sourceReference: 'afflom/UORust (route admission -> AST span lift -> prismpm check -> just vv)',
+    epistemicCondition: 'PROPOSED',
+    description: 'Future local Windmill runnable contract translating pinned Cargo workspaces into Prism/LexLean models; browser Cargo execution is disabled.',
+    supportedFamilies: ['formal-verification', 'application'],
+    windmillFlowPath: 'f/uor_foundry/uorust_model_workspace',
+    stages: STANDARD_EIGHT_STAGES,
+  },
 ];
 
 export const INITIAL_PROJECTS: ProjectRecord[] = [
@@ -237,6 +259,18 @@ export const INITIAL_PROJECTS: ProjectRecord[] = [
       'Browser & Identity Acceptance Suite: NOT VERIFIED in Google AI Studio sandbox.',
       'Human Release Authorization disposition: DEFERRED.',
     ],
+    sourceRefs: [
+      {
+        sourceId: 'prism-devrel',
+        commitSha: '5f2ebfcec2bb6816c5bec6e6a17bbfdb6bab76a5',
+        role: 'Template contract & facet coverage benchmark',
+      },
+      {
+        sourceId: 'stitch',
+        commitSha: '1607d53dfc5a34324f8102123d166d727cc66634',
+        role: 'Content-addressed SHA-256 artifact commitment semantics',
+      },
+    ],
   },
   {
     id: 'proj-lexlean-mcp',
@@ -258,6 +292,18 @@ export const INITIAL_PROJECTS: ProjectRecord[] = [
       'Live Windmill MCP resource bridge (uor-offline-foundry) NOT CONNECTED.',
       'Release Authorization: DEFERRED.',
     ],
+    sourceRefs: [
+      {
+        sourceId: 'rule30',
+        commitSha: 'e3be477fded263029479127363f7fb6a3597e7d4',
+        role: 'Constructivity axiom audit & frontier separation pattern',
+      },
+      {
+        sourceId: 'stitch',
+        commitSha: '1607d53dfc5a34324f8102123d166d727cc66634',
+        role: 'Untruncated SHA-256 commitment & pure replay checkpoint rules',
+      },
+    ],
   },
   {
     id: 'proj-forge-abi',
@@ -278,6 +324,13 @@ export const INITIAL_PROJECTS: ProjectRecord[] = [
       'Forge Kernel authoritative repository and ABI verification runner are UNVERIFIED.',
       'Hologram Forge Application Core integration is UNVERIFIED.',
       'Zero execution or release approval may be inferred without local evidence.',
+    ],
+    sourceRefs: [
+      {
+        sourceId: 'stitch',
+        commitSha: '1607d53dfc5a34324f8102123d166d727cc66634',
+        role: 'Custody receipt & boundary accountability reference',
+      },
     ],
   },
 ];
@@ -637,6 +690,9 @@ export const INITIAL_ARTIFACTS: ArtifactProvenanceRecord[] = [
       'Forge Kernel and Browser/Identity acceptance suites are NOT VERIFIED.',
       'Human Release Authorization is DEFERRED.',
     ],
+    byteLength: 148240,
+    fragmentRecoverySpec: '2-of-3-xor-sha256-planned',
+    custodyBoundaryNote: 'Content commitment tracked via SHA-256 only; zero P2P/relay transport enabled.',
     createdAt: '2026-10-08T16:00:00Z',
   },
   {
@@ -660,6 +716,9 @@ export const INITIAL_ARTIFACTS: ArtifactProvenanceRecord[] = [
       'Verify task (#11) and host adapter (#17) remain open upstream.',
       'No live signed attestation retrieved from Windmill MCP gateway.',
     ],
+    byteLength: 89412,
+    fragmentRecoverySpec: '2-of-3-xor-sha256-planned',
+    custodyBoundaryNote: 'SHA-256 commitment separated from host path names; custody verification remains offline.',
     createdAt: '2026-11-12T15:00:00Z',
   },
 ];

@@ -4,22 +4,22 @@ import {
   DURABLE_EXPORT_ALLOWLIST_SCHEMA,
   DurableWorkspaceSnapshot,
   durableLocalStore,
-} from '../services/durableLocalStore.ts';
+} from '../shared/services/durableLocalStore.ts';
 import {
   AIR_GAPPED_EXPORT_ALLOWLIST_SCHEMA,
   foundrySyncService,
   sanitizeExportBundle,
-} from '../services/syncService.ts';
+} from '../shared/services/syncService.ts';
 import {
   AuthorityTrustContext,
   verificationAuthorityService,
-} from '../services/verificationAuthorityService.ts';
+} from '../shared/services/verificationAuthorityService.ts';
 import {
   ApprovalDecisionRecord,
   ArtifactProvenanceRecord,
   ProjectRecord,
   VerificationSuiteRecord,
-} from '../types/foundry.ts';
+} from '../shared/types/foundry.ts';
 
 const ARTIFACT_DIGEST =
   '31795eac06fbf1d64c77ffe66b5492964c069e1f2fea41efbf6a17054cf369d7';
@@ -635,7 +635,7 @@ test('sanitizeExportBundle neutralizes hostile strings, prototype keys, and deep
 });
 
 test('DEMO mode never dispatches a real Windmill job', async () => {
-  const { DemoWindmillExecutionService } = await import('../adapters/windmillExecutionService.ts');
+  const { DemoWindmillExecutionService } = await import('../shared/adapters/windmillExecutionService.ts');
   const demoService = new DemoWindmillExecutionService({
     fixtures: [],
     verifications: [],

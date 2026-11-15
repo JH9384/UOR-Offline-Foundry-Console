@@ -12,7 +12,8 @@ import { TopBar } from './components/TopBar';
 import { BuildModePanel } from './components/studio/BuildModePanel';
 import { ChatPanel } from './components/studio/ChatPanel';
 import { LivePreviewPanel } from './components/studio/LivePreviewPanel';
-import { VerifyReleasePanel } from './components/studio/VerifyReleasePanel';
+import { SourceCompliancePanel } from './components/studio/SourceCompliancePanel';
+import { VerifyReleasePanel, VerifySubTab } from './components/studio/VerifyReleasePanel';
 import { WorkspaceSidebar } from './components/studio/WorkspaceSidebar';
 import { WorkspaceTopBar } from './components/studio/WorkspaceTopBar';
 import { AiAssistanceView } from './components/views/AiAssistanceView';
@@ -44,7 +45,10 @@ import {
   DurableWorkspaceSnapshot,
   recoverWorkspaceSnapshot,
 } from './services/durableLocalStore';
-import { foundryService } from './services/foundryService';
+import {
+  computeDeterministicPureStateHash,
+  foundryService,
+} from './services/foundryService';
 import { foundrySyncService } from './services/syncService';
 import {
   ActivityEvent,
@@ -185,6 +189,7 @@ export default function App() {
 
   const [workspaceShell, setWorkspaceShell] = useState<'studio' | 'advanced'>('studio');
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('chat');
+  const [verifySubTab, setVerifySubTab] = useState<VerifySubTab>('evidence');
   const [activeSection, setActiveSection] = useState<NavigationSectionId>('overview');
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
     () =>
@@ -954,11 +959,26 @@ export default function App() {
 
   const handleCreateCheckpoint = (name: string) => {
     if (!activeProject) return;
+    const stateSha256 = computeDeterministicPureStateHash({
+      projectId: activeProject.id,
+      sourceRevision: activeProject.sourceRevision,
+      preview: {
+        appTitle: activePreview.appTitle,
+        subtitle: activePreview.subtitle,
+        layoutDensity: activePreview.layoutDensity,
+        primaryActionLabel: activePreview.primaryActionLabel,
+        showProvenanceFooter: activePreview.showProvenanceFooter,
+        showMonospaceOutputs: activePreview.showMonospaceOutputs,
+        customWidgets: activePreview.customWidgets,
+      },
+    });
     const cp: ProjectCheckpoint = {
       id: `cp-${Date.now()}`,
       projectId: activeProject.id,
       name,
       createdAt: new Date().toISOString(),
+      stateSha256,
+      semanticReplayScope: 'DETERMINISTIC_PURE_STATE_ONLY',
       preview: activePreview,
     };
     setState((prev) => ({
@@ -966,7 +986,7 @@ export default function App() {
       revision: prev.revision + 1,
       checkpoints: [cp, ...prev.checkpoints],
     }));
-    notify('success', `Saved checkpoint "${name}" locally.`);
+    notify('success', `Saved checkpoint "${name}" locally (sha:${stateSha256.slice(0, 12)}).`);
   };
 
   const handleRestoreCheckpoint = (checkpointId: string) => {
@@ -1197,6 +1217,11 @@ export default function App() {
     setWorkspaceShell('advanced');
   };
 
+  const openSourceComplianceContext = () => {
+    setVerifySubTab('compliance');
+    setWorkspaceMode('verify');
+  };
+
   const dismissFirstRunGuide = () => {
     setShowFirstRunGuide(false);
     if (typeof window !== 'undefined') {
@@ -1369,6 +1394,7 @@ export default function App() {
                       onResetPreview={handleResetPreview}
                       onSelectElement={(el) => setReferencedElement(el)}
                       onSwitchMode={setWorkspaceMode}
+                      onOpenSourceCompliance={openSourceComplianceContext}
                     />
                   </div>
                 </div>
@@ -1397,6 +1423,7 @@ export default function App() {
                       if (el) setWorkspaceMode('chat');
                     }}
                     onSwitchMode={setWorkspaceMode}
+                    onOpenSourceCompliance={openSourceComplianceContext}
                   />
                 </div>
               )}
@@ -1424,6 +1451,8 @@ export default function App() {
                   verifications={state.verifications}
                   artifacts={state.artifacts}
                   approvals={state.approvals}
+                  activeSubTab={verifySubTab}
+                  onChangeSubTab={setVerifySubTab}
                   onSelectProject={handleSelectProject}
                   onOpenAdvancedSection={openAdvancedSection}
                 />
@@ -1493,6 +1522,17 @@ export default function App() {
                   verifications={state.verifications}
                   selectedProjectId={selectedProjectId}
                   onSelectProject={handleSelectProject}
+                />
+              )}
+
+              {activeSection === 'compliance' && (
+                <SourceCompliancePanel
+                  project={activeProject}
+                  projects={state.projects}
+                  onSelectProject={handleSelectProject}
+                  verifications={state.verifications}
+                  artifacts={state.artifacts}
+                  approvals={state.approvals}
                 />
               )}
 

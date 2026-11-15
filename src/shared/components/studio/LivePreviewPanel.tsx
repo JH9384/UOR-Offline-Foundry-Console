@@ -53,6 +53,7 @@ interface LivePreviewPanelProps {
   onResetPreview: () => void;
   onSelectElement: (element: PreviewElementRef | null) => void;
   onSwitchMode: (mode: WorkspaceMode) => void;
+  onOpenSourceCompliance?: () => void;
 }
 
 const PREVIEW_KINDS: Array<{ id: ArtifactPreviewKind; label: string }> = [
@@ -82,6 +83,7 @@ export const LivePreviewPanel: React.FC<LivePreviewPanelProps> = ({
   onResetPreview,
   onSelectElement,
   onSwitchMode,
+  onOpenSourceCompliance,
 }) => {
   const [previewKind, setPreviewKind] = useState<ArtifactPreviewKind>('ui-build');
   const [inspectMode, setInspectMode] = useState(false);
@@ -446,6 +448,7 @@ export const LivePreviewPanel: React.FC<LivePreviewPanelProps> = ({
                           minute: '2-digit',
                         })}{' '}
                         · {cp.preview.primaryActionLabel}
+                        {cp.stateSha256 ? ` · sha:${cp.stateSha256.slice(0, 12)}` : ''}
                       </div>
                     </div>
                     <button
@@ -680,17 +683,32 @@ export const LivePreviewPanel: React.FC<LivePreviewPanelProps> = ({
                   className={`pt-3 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400 ${getInspectClass('preview-footer')}`}
                 >
                   <span className="font-mono">{project.sourceRevision}</span>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      if (inspectMode) return;
-                      e.stopPropagation();
-                      onSwitchMode('verify');
-                    }}
-                    className="font-mono text-amber-300 hover:underline"
-                  >
-                    {project.lifecycleStatus}
-                  </button>
+                  <div className="flex items-center gap-3">
+                    {onOpenSourceCompliance && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          if (inspectMode) return;
+                          e.stopPropagation();
+                          onOpenSourceCompliance();
+                        }}
+                        className="text-sky-300 hover:underline"
+                      >
+                        Source Compliance &rarr;
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        if (inspectMode) return;
+                        e.stopPropagation();
+                        onSwitchMode('verify');
+                      }}
+                      className="font-mono text-amber-300 hover:underline"
+                    >
+                      {project.lifecycleStatus}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

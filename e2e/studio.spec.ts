@@ -66,8 +66,11 @@ test.describe('UOR Offline Foundry Studio Workspace E2E', () => {
     await page.getByRole('button', { name: /Submit & Launch Simulated Workflow/i }).click();
     await expect(page.getByText(/Project name must be at least 4 characters/i)).toBeVisible();
 
-    // 2. Project creation from synthetic UOR template
-    await page.getByTestId('template-formal-verification').click();
+    // 2. Verify 3 UOR-grounded synthetic templates and create Formal Research Project
+    await expect(page.getByTestId('template-formal-research')).toBeVisible();
+    await expect(page.getByTestId('template-prism-product')).toBeVisible();
+    await expect(page.getByTestId('template-rust-workspace-model')).toBeVisible();
+    await page.getByTestId('template-formal-research').click();
     await page.locator('#intake-name').fill('LexLean Proof Template Run');
     await page.getByRole('button', { name: /Submit & Launch Simulated Workflow/i }).click();
     await expect(page.getByRole('dialog')).toBeHidden();
@@ -192,10 +195,14 @@ test.describe('UOR Offline Foundry Studio Workspace E2E', () => {
     await page.getByRole('button', { name: 'Stage Local Intent' }).click();
     await expect(page.getByRole('main').getByText(/Duplicate dispatch prevented/i)).toBeVisible();
 
-    // 11. Verify & Release blockers
+    // 11. Verify & Release blockers + contextual Source Review & Compliance
     await modesNav.getByRole('button', { name: 'Verify & Release' }).click();
     await expect(page.getByText('RELEASE BLOCKED').first()).toBeVisible();
     await expect(page.getByText('NOT VERIFIED').first()).toBeVisible();
+    await page.getByRole('button', { name: /Source Review & Compliance/i }).click();
+    await expect(page.getByTestId('source-compliance-panel')).toBeVisible();
+    await expect(page.getByText('UOR Source Review & Compliance Register')).toBeVisible();
+    await expect(page.getByText(/e3be477fded263029479127363f7fb6a3597e7d4/).first()).toBeVisible();
     await page.getByRole('button', { name: /Release Governance/i }).click();
     await expect(page.getByRole('button', { name: /Authorize Production Release \(Blocked\)/i })).toBeDisabled();
     await expect(page.getByText('NO (Prohibited)').first()).toBeVisible();

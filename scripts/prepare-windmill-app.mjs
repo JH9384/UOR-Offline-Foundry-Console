@@ -6,10 +6,11 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, '..');
-const SRC_DIR = path.join(ROOT_DIR, 'src');
+const SHARED_SRC_DIR = path.join(ROOT_DIR, 'src', 'shared');
 const RAW_APP_DIR = path.join(ROOT_DIR, 'uor_foundry.raw_app');
-const STAGED_SRC_DIR = path.join(RAW_APP_DIR, 'src');
-const STAGED_CSS_FILE = path.join(RAW_APP_DIR, 'index.css');
+const STAGED_SHARED_DIR = path.join(RAW_APP_DIR, 'shared');
+const LEGACY_STAGED_SRC_DIR = path.join(RAW_APP_DIR, 'src');
+const LEGACY_STAGED_CSS_FILE = path.join(RAW_APP_DIR, 'index.css');
 
 const verifyOnly = process.argv.includes('--verify');
 
@@ -46,18 +47,21 @@ function collectCodeFiles(dir, out = []) {
 }
 
 function prepare() {
-  if (!fs.existsSync(SRC_DIR)) {
-    throw new Error(`Missing source directory: ${SRC_DIR}`);
+  if (!fs.existsSync(SHARED_SRC_DIR)) {
+    throw new Error(`Missing shared source library directory: ${SHARED_SRC_DIR}`);
   }
-  fs.rmSync(STAGED_SRC_DIR, { recursive: true, force: true });
-  copyDirFiltered(SRC_DIR, STAGED_SRC_DIR);
+  // Remove legacy staged Vite-shaped copies (`src/` & `index.css`) if present
+  fs.rmSync(LEGACY_STAGED_SRC_DIR, { recursive: true, force: true });
+  fs.rmSync(LEGACY_STAGED_CSS_FILE, { force: true });
 
-  const rootCss = path.join(SRC_DIR, 'index.css');
-  if (!fs.existsSync(rootCss)) {
-    throw new Error(`Missing CSS entrypoint: ${rootCss}`);
+  fs.rmSync(STAGED_SHARED_DIR, { recursive: true, force: true });
+  copyDirFiltered(SHARED_SRC_DIR, STAGED_SHARED_DIR);
+
+  const sharedCss = path.join(STAGED_SHARED_DIR, 'index.css');
+  if (!fs.existsSync(sharedCss)) {
+    throw new Error(`Missing shared CSS entrypoint after sync: ${sharedCss}`);
   }
-  fs.copyFileSync(rootCss, STAGED_CSS_FILE);
-  console.log('[windmill:prepare] Synced src/ (excluding tests) -> uor_foundry.raw_app/src/ and index.css');
+  console.log('[windmill:prepare] Synced src/shared/ -> uor_foundry.raw_app/shared/ (independent of src/main.tsx)');
 }
 
 function validate() {
@@ -67,7 +71,9 @@ function validate() {
     'tsconfig.json',
     'App.tsx',
     'index.tsx',
-    'index.css',
+    'shared/App.tsx',
+    'shared/index.ts',
+    'shared/index.css',
     'wmill.contract.ts',
     'backend/runtime_health.ts',
     'backend/local_ai_advisory.ts',

@@ -8,7 +8,7 @@ on:
 
 jobs:
   verify:
-    name: Typecheck, Security Tests, Build & Windmill Package Check
+    name: Typecheck, Windmill Packaging, Security, Unit & E2E Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -23,11 +23,20 @@ jobs:
       - name: Install dependencies cleanly
         run: npm ci
 
-      - name: TypeScript typecheck
+      - name: Root TypeScript typecheck (independent of Windmill staged files)
         run: npm run typecheck
 
-      - name: Mandatory security regression tests
+      - name: Prepare Windmill full-code app shared library
+        run: npm run windmill:prepare
+
+      - name: Validate Windmill full-code app package closure & standalone typecheck
+        run: npm run windmill:validate
+
+      - name: Mandatory security regression & predicate tests
         run: npm run test:security
+
+      - name: Unit, component & state transition tests
+        run: npm run test:unit
 
       - name: Full unit & offline reliability tests
         run: npm run test
@@ -35,5 +44,8 @@ jobs:
       - name: Production Vite build
         run: npm run build
 
-      - name: Validate Windmill full-code app package closure
-        run: npm run windmill:validate
+      - name: Install Playwright Chromium browser & OS dependencies
+        run: npx playwright install --with-deps chromium
+
+      - name: Execute Playwright browser E2E tests
+        run: npm run test:e2e

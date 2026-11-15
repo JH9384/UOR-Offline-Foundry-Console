@@ -13,27 +13,41 @@ An offline-first, AI Studio-style engineering workspace built over five explicit
 ```bash
 npm install
 npm run dev               # Start local Vite dev server (port 3000)
-npm run typecheck         # Run TypeScript check across workspace
-npm run test:security     # Run security regression & release gate tests
-npm run test              # Run full unit test suite (security + offline reliability)
-npm run test:e2e          # Run headless Playwright Studio browser E2E suite
+npm run windmill:prepare  # Sync shared library (src/shared/) into uor_foundry.raw_app/shared/
+npm run typecheck         # Run TypeScript check across root workspace (independent of generated raw_app)
+npm run windmill:validate # Validate Windmill raw_app dependency closure & standalone tsconfig
+npm run test:security     # Run Vitest + tsx security predicates & release gate regression suite
+npm run test:unit         # Run Vitest + React Testing Library project state transition & UI tests
+npm run test              # Run security, unit, and offline reliability test suites
 npm run build             # Build production Vite bundle (dist/)
-npm run windmill:prepare  # Sync src/ (excluding tests) into uor_foundry.raw_app/
-npm run windmill:validate # Validate Windmill raw_app dependency closure & boundaries
+npm run test:e2e          # Run headless Playwright Studio browser E2E suite
 npm run check             # Execute typecheck + test + build
 ```
 
-GitHub Actions CI (`.github/workflows/ci.yml`) runs `typecheck`, `test:security`, `test`, `build`, `windmill:validate`, and Playwright `test:e2e` on pull requests and pushes to `main`.
+GitHub Actions CI (`.github/workflows/ci.yml`) runs root `typecheck` independently first (proving zero dependency on staged Windmill files), then executes `windmill:prepare`, `windmill:validate`, `test:security`, `test:unit`, `test`, `build`, installs Playwright Chromium + OS deps, and executes `test:e2e`.
+
+---
+
+## 1b. UOR Source Review & Compliance Register
+
+The `Source Review & Compliance` panel (accessible in `Verify & Release` and the Advanced Console) tracks four upstream repositories at their inspected commits with explicit epistemic states (`proved | built | tested | observed | untested | blocked | refuted`), license notices, and project-specific applicability gates:
+
+| Source | Inspected Commit SHA | License | Integration Status | Key Constraints Preserved |
+| --- | --- | --- | --- | --- |
+| `afflom/rule30` | `e3be477fded263029479127363f7fb6a3597e7d4` | `MIT` | `REFERENCE ONLY` | Prize Problem 1 (`problem1`) & `aperiodic-compensation` remain open (`untested` / `blocked`); `{propext, Quot.sound}` only |
+| `afflom/prism-devrel` | `5f2ebfcec2bb6816c5bec6e6a17bbfdb6bab76a5` | `MIT OR Apache-2.0` | `CANDIDATE` | Synthetic Diátaxis / `uor/template-contract/1` preview cannot replace real `prismpm` / `lexlean verify` |
+| `afflom/stitch` | `1607d53dfc5a34324f8102123d166d727cc66634` | `MIT` (package.json/README; root LICENSE missing) | `REFERENCE ONLY` | Untruncated SHA-256 commitments & pure-state hashes adopted; `C1..C6` blockers/refutations preserved; P2P/relay excluded |
+| `afflom/UORust` | `2a2b674f15cd1d7bc638d4c52d0606ad135f3098` | `MIT OR Apache-2.0` | `CANDIDATE` | Future Windmill target `f/uor_foundry/uorust_model_workspace` only; arbitrary Cargo execution disabled in browser |
 
 ---
 
 ## 2. Five-Layer Architecture
 
-1. **Studio Presentation** (`src/components/`, `src/components/studio/`, `src/components/views/`): Conversational workspace, element-referenced live sandbox preview, simulated build stage inspector, independent verify/release panels, and Advanced Console views.
-2. **Project, Conversation & Durable Local Services** (`src/services/foundryService.ts`, `src/services/durableLocalStore.ts`, `src/services/syncService.ts`): Project creation/templates, conversation threads, approval-gated diffs, undo/redo + named checkpoints, IndexedDB (`uor_foundry_durable_v1`) + `localStorage` (`uor_foundry_console_state_v2`) caching, and allowlisted exports.
-3. **AI & Preview Adapters** (`src/adapters/chatProviderAdapter.ts`, `src/adapters/artifactPreviewAdapter.ts`): Abortable chunked streaming (`MockPreviewChatProvider` in `DEMO`; `WindmillLmStudioChatProvider` fail-closed contract for `LOCAL`), plus sandboxed previews (`DEMO | DRAFT | BUILT | VERIFIED | UNAVAILABLE`).
-4. **Windmill Execution Services & Packaging** (`src/adapters/windmillAdapter.ts`, `src/adapters/windmillExecutionService.ts`, `uor_foundry.raw_app/`): Targets workspace `uor-offline-foundry` without hardcoded tokens or direct browser Windmill calls.
-5. **Independent Verification & Release Authority** (`src/services/verificationAuthorityService.ts`): Versioned policy enforcement (`VERIFICATION_POLICIES`), evidence authenticity checks, digest/revision binding, and strict human `APPROVED_FOR_RELEASE` (`PRODUCTION_RELEASE`) governance.
+1. **Studio Presentation** (`src/shared/components/`, `src/shared/components/studio/`, `src/shared/components/views/`): Conversational workspace, element-referenced live sandbox preview, simulated build stage inspector, independent verify/release panels, and Advanced Console views.
+2. **Project, Conversation & Durable Local Services** (`src/shared/services/foundryService.ts`, `src/shared/services/durableLocalStore.ts`, `src/shared/services/syncService.ts`): Project creation/templates, conversation threads, approval-gated diffs, undo/redo + named checkpoints, IndexedDB (`uor_foundry_durable_v1`) + `localStorage` (`uor_foundry_console_state_v2`) caching, and allowlisted exports.
+3. **AI & Preview Adapters** (`src/shared/adapters/chatProviderAdapter.ts`, `src/shared/adapters/artifactPreviewAdapter.ts`): Abortable chunked streaming (`MockPreviewChatProvider` in `DEMO`; `WindmillLmStudioChatProvider` fail-closed contract for `LOCAL`), plus sandboxed previews (`DEMO | DRAFT | BUILT | VERIFIED | UNAVAILABLE`).
+4. **Windmill Execution Services & Packaging** (`src/shared/adapters/windmillAdapter.ts`, `src/shared/adapters/windmillExecutionService.ts`, `uor_foundry.raw_app/`): Targets workspace `uor-offline-foundry` without hardcoded tokens or direct browser Windmill calls.
+5. **Independent Verification & Release Authority** (`src/shared/services/verificationAuthorityService.ts`): Versioned policy enforcement (`VERIFICATION_POLICIES`), evidence authenticity checks, digest/revision binding, and strict human `APPROVED_FOR_RELEASE` (`PRODUCTION_RELEASE`) governance.
 
 ---
 
@@ -62,7 +76,7 @@ GitHub Actions CI (`.github/workflows/ci.yml`) runs `typecheck`, `test:security`
 ## 5. Windmill Packaging & Integration Boundaries
 
 - **Option A (Vite/React + Authenticated Local Adapter)**: Uses `VITE_AUTHENTICATED_LOCAL_PROXY`; locked until endpoint and auth validation succeed.
-- **Option B (Windmill Full-Code App — `uor_foundry.raw_app/`)**: Private (`public: false`, `guests: false`), self-contained via `npm run windmill:prepare` (syncing `src/` without test files into `uor_foundry.raw_app/src/`) and `wmill.contract.ts`. Packaging status inside AI Studio is **`PREPARED — LOCAL VALIDATION REQUIRED`** until `wmill app dev` generates `./wmill.ts` inside your Mac Studio `uor-offline-foundry` workspace.
+- **Option B (Windmill Full-Code App — `uor_foundry.raw_app/`)**: Private (`public: false`, `guests: false`), self-contained via `npm run windmill:prepare` (syncing `src/shared/` into `uor_foundry.raw_app/shared/`, independent of Vite's `src/main.tsx`) and `wmill.contract.ts`. Packaging status inside AI Studio is **`PREPARED — LOCAL VALIDATION REQUIRED`** until `wmill app dev` generates `./wmill.ts` inside your Mac Studio `uor-offline-foundry` workspace.
 - **LM Studio Advisory Boundary**: Routed exclusively through Windmill runnable `backend/local_ai_advisory.ts`; direct browser inference and privileged repository/shell actions remain disabled.
 
 ---

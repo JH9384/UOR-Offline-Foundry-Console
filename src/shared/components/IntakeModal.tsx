@@ -64,22 +64,31 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
       environmentDeclaration: tpl.environmentDeclaration,
       sourceRevision: tpl.sourceRevision,
       acknowledgeBoundary: true,
+      sourceRefs: tpl.sourceRefs,
+      templateOriginId: tpl.id,
     });
     setErrors({});
   };
 
   const handleFillExample = () => {
-    setSelectedTemplateId('application');
+    const sampleTpl =
+      PROJECT_TEMPLATES.find((t) => t.id === 'prism-product') ?? PROJECT_TEMPLATES[0];
+    setSelectedTemplateId(sampleTpl.id);
     setForm({
       projectName: 'PrismPM Calculator Qualification Demo',
-      productFamily: 'application',
-      componentId: 'prismpm-calculator',
-      workflowId: 'wf-prismpm-delivery',
-      purpose: 'Simulate closed .lex.tex build and fail-closed verification gates for Calculator reference model.',
-      declaredInputs: 'examples/Calculator/src/Calculator.lex.tex, examples/Calculator/lexlean.lock',
-      environmentDeclaration: 'Sanitized browser demonstration; target Windmill workspace uor-offline-foundry',
+      productFamily: sampleTpl.productFamily,
+      componentId: sampleTpl.componentId,
+      workflowId: sampleTpl.workflowId,
+      purpose:
+        'Simulate closed .lex.tex build and fail-closed verification gates for Calculator reference model.',
+      declaredInputs:
+        'examples/Calculator/src/Calculator.lex.tex, examples/Calculator/lexlean.lock',
+      environmentDeclaration:
+        'Sanitized browser demonstration; target Windmill workspace uor-offline-foundry',
       sourceRevision: 'prismpm/demo@ee207ff1',
       acknowledgeBoundary: true,
+      sourceRefs: sampleTpl.sourceRefs,
+      templateOriginId: sampleTpl.id,
     });
     setErrors({});
   };

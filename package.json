@@ -10,8 +10,9 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test:security": "tsx --test src/tests/security.test.ts tests/securityRegression.test.ts",
-    "test": "tsx --test src/tests/security.test.ts src/tests/offlineReliability.test.ts tests/securityRegression.test.ts",
+    "test:security": "vitest run src/tests/securityPredicates.vitest.test.ts && tsx --test src/tests/security.test.ts tests/securityRegression.test.ts",
+    "test:unit": "vitest run src/tests/projectStateTransitions.vitest.test.tsx",
+    "test": "npm run test:security && npm run test:unit && tsx --test src/tests/offlineReliability.test.ts",
     "test:e2e": "playwright test",
     "windmill:prepare": "node scripts/prepare-windmill-app.mjs",
     "windmill:validate": "node scripts/prepare-windmill-app.mjs --verify",
@@ -31,14 +32,18 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.65.1",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.28.0",
+    "jsdom": "^31.0.1",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
   }
 }

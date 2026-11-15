@@ -3,13 +3,13 @@ import test from 'node:test';
 import {
   DemoWindmillExecutionService,
   FailClosedLocalWindmillService,
-} from '../src/adapters/windmillExecutionService.ts';
-import { durableLocalStore } from '../src/services/durableLocalStore.ts';
-import { foundrySyncService } from '../src/services/syncService.ts';
+} from '../src/shared/adapters/windmillExecutionService.ts';
+import { durableLocalStore } from '../src/shared/services/durableLocalStore.ts';
+import { foundrySyncService } from '../src/shared/services/syncService.ts';
 import {
   AuthorityTrustContext,
   verificationAuthorityService,
-} from '../src/services/verificationAuthorityService.ts';
+} from '../src/shared/services/verificationAuthorityService.ts';
 import {
   ApprovalDecisionRecord,
   ArtifactProvenanceRecord,
@@ -17,7 +17,7 @@ import {
   ProjectRecord,
   VerificationSuiteAuthority,
   VerificationSuiteRecord,
-} from '../src/types/foundry.ts';
+} from '../src/shared/types/foundry.ts';
 import { main as jobStatusMain } from '../uor_foundry.raw_app/backend/job_status.ts';
 import { main as aiAdvisoryMain } from '../uor_foundry.raw_app/backend/local_ai_advisory.ts';
 import { main as intakeValidateMain } from '../uor_foundry.raw_app/backend/intake_validate.ts';

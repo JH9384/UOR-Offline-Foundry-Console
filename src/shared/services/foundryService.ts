@@ -28,43 +28,147 @@ import {
 
 export const PROJECT_TEMPLATES: ProjectTemplateSpec[] = [
   {
-    id: 'application',
-    title: 'Application Development',
-    productFamily: 'application',
-    componentId: 'prismpm-calculator',
-    workflowId: 'wf-prismpm-delivery',
-    defaultNamePrefix: 'PrismPM App Target',
-    purpose: 'Assemble and simulate a closed .lex.tex application build targeting .holo v4 packaging.',
-    declaredInputs: 'examples/Calculator/src/Calculator.lex.tex, examples/Calculator/lexlean.lock',
-    environmentDeclaration: 'Sanitized offline workspace (no local credentials or raw controller logs)',
-    sourceRevision: 'prismpm/demo@ee207ff1',
-    description: 'Uses PrismPM Calculator & HOLOVIEW closed-model pipeline with Forge & Browser gates.',
-  },
-  {
-    id: 'formal-verification',
-    title: 'Formal Verification',
+    id: 'formal-research',
+    title: 'Formal Research Project',
     productFamily: 'formal-verification',
     componentId: 'lexlean-compiler',
     workflowId: 'wf-lexlean-formal',
-    defaultNamePrefix: 'LexLean Proof Target',
-    purpose: 'Evaluate Lean 4.32.1 kernel proof discharge, axiom audit, and determinism checks in simulation.',
-    declaredInputs: 'src/Spec/KernelInvariant.lex.tex, lexlean.lock',
-    environmentDeclaration: 'Sanitized offline proof container targeting Mac Studio runner',
-    sourceRevision: 'lexlean/demo@0.4.0',
-    description: 'Uses LexLean Compiler formal proof workflow with independent kernel & Forge gates.',
+    defaultNamePrefix: 'Formal Research Frontier',
+    purpose:
+      'Track constructive Lean 4 proof obligations, frontier claims, and open conjectures (preserving Rule 30 Prize Problem 1 as unproved).',
+    declaredInputs: 'frontier.toml, Paper.lex.tex, Observations.lex.tex, lexlean.lock',
+    environmentDeclaration:
+      'Sanitized research frontier workspace (constructive {propext, Quot.sound}; live runner NOT CONNECTED)',
+    sourceRevision: 'rule30/main@e3be477f',
+    description:
+      'Grounded in afflom/rule30: frontier register, axiom audit, and strict non-conflation of proved lemmas vs open problems.',
+    sourceRefs: [
+      {
+        sourceId: 'rule30',
+        commitSha: 'e3be477fded263029479127363f7fb6a3597e7d4',
+        role: 'Primary claim frontier & constructive axiom audit reference',
+      },
+      {
+        sourceId: 'stitch',
+        commitSha: '1607d53dfc5a34324f8102123d166d727cc66634',
+        role: 'Full SHA-256 observation manifest & pure replay checkpoint digest',
+      },
+    ],
+    previewMeta: {
+      primaryActionLabel: 'Inspect Claim Frontier (Dry-Run)',
+      subtitle: 'Constructive Axiom Frontier · Rule 30 Pattern · Problem 1 OPEN',
+      customWidgets: [
+        {
+          id: 'cw-tpl-frontier',
+          label: 'Claim Frontier',
+          kind: 'note',
+          value: 'problem1: untested · aperiodic-compensation: blocked',
+        },
+        {
+          id: 'cw-tpl-axioms',
+          label: 'Axiom Policy',
+          kind: 'metric',
+          value: '{propext, Quot.sound} only',
+        },
+      ],
+    },
   },
   {
-    id: 'scientific-computation',
-    title: 'Scientific Computation',
-    productFamily: 'scientific-computation',
-    componentId: 'uor-framework-ontology',
-    workflowId: 'wf-uor-intake-standard',
-    defaultNamePrefix: 'UOR Scientific Probe',
-    purpose: 'Model deterministic ring-substrate computations and ontology schema checks before local dispatch.',
-    declaredInputs: 'ontology/uor_ring.json, experiments/probe_manifest.json',
-    environmentDeclaration: 'Sanitized scientific simulation environment; Mac Studio runner disconnected',
-    sourceRevision: 'uor-framework/demo@0.4.0',
-    description: 'Uses UOR Framework Ontology schema intake with full 7-gate qualification holds.',
+    id: 'prism-product',
+    title: 'Prism-Generated Application',
+    productFamily: 'application',
+    componentId: 'prismpm-calculator',
+    workflowId: 'wf-prismpm-delivery',
+    defaultNamePrefix: 'Prism Product Target',
+    purpose:
+      'Model a source-pinned Prism application with Diataxis doc stages, facet coverage, and uor/template-contract/1 packaging readiness.',
+    declaredInputs: 'devrel/subjects.json, app/src/Catalog.lex.tex, lexlean.lock',
+    environmentDeclaration:
+      'Sanitized Prism product simulation (replaces neither PrismPM nor LexLean SDK verification)',
+    sourceRevision: 'prism-devrel/main@5f2ebfce',
+    description:
+      'Grounded in afflom/prism-devrel: Diataxis journey stages, Catalog coverage checks, and .holo v4 delivery gates.',
+    sourceRefs: [
+      {
+        sourceId: 'prism-devrel',
+        commitSha: '5f2ebfcec2bb6816c5bec6e6a17bbfdb6bab76a5',
+        role: 'Source-pinned DevRel catalog, Diataxis & template contract reference',
+      },
+      {
+        sourceId: 'stitch',
+        commitSha: '1607d53dfc5a34324f8102123d166d727cc66634',
+        role: 'Content-addressed SHA-256 package commitment & pure state hash',
+      },
+    ],
+    previewMeta: {
+      primaryActionLabel: 'Check Catalog Coverage (Demo)',
+      subtitle: 'Diataxis Journey · uor/template-contract/1 · Facet Preview',
+      customWidgets: [
+        {
+          id: 'cw-tpl-diataxis',
+          label: 'Diataxis Stages',
+          kind: 'metric',
+          value: 'Discover -> Evaluate -> Learn -> Build -> Scale',
+        },
+        {
+          id: 'cw-tpl-contract',
+          label: 'Template Schema',
+          kind: 'note',
+          value: 'uor/template-contract/1 (synthetic preview)',
+        },
+      ],
+    },
+  },
+  {
+    id: 'rust-workspace-model',
+    title: 'Existing Rust Project Modeling',
+    productFamily: 'formal-verification',
+    componentId: 'uorust-translator',
+    workflowId: 'wf-uorust-modeling',
+    defaultNamePrefix: 'Rust Workspace Model',
+    purpose:
+      'Model an existing Cargo workspace into Prism/LexLean spans via UORust route tables without running arbitrary Cargo build scripts in browser.',
+    declaredInputs: 'Cargo.toml, Cargo.lock, model/routes.toml, crates/certified/manifest.toml',
+    environmentDeclaration:
+      'Local Windmill UORust runner contract (f/uor_foundry/uorust_model_workspace — NOT CONNECTED)',
+    sourceRevision: 'UORust/main@2a2b674f',
+    description:
+      'Grounded in afflom/UORust: Cargo AST route tables, typed source-span refusals, and fail-closed Windmill runnable contract.',
+    sourceRefs: [
+      {
+        sourceId: 'uorust',
+        commitSha: '2a2b674f15cd1d7bc638d4c52d0606ad135f3098',
+        role: 'Primary Cargo -> Prism/LexLean translator & span refusal contract',
+      },
+      {
+        sourceId: 'prism-devrel',
+        commitSha: '5f2ebfcec2bb6816c5bec6e6a17bbfdb6bab76a5',
+        role: 'R1-R6 template conformance & facet projection alignment',
+      },
+      {
+        sourceId: 'stitch',
+        commitSha: '1607d53dfc5a34324f8102123d166d727cc66634',
+        role: 'Byte-length & SHA-256 projection artifact commitment',
+      },
+    ],
+    previewMeta: {
+      primaryActionLabel: 'Inspect Route Admission (Dry-Run)',
+      subtitle: 'UORust Cargo Projection · Browser Cargo Execution Disabled',
+      customWidgets: [
+        {
+          id: 'cw-tpl-routes',
+          label: 'Route Admission',
+          kind: 'note',
+          value: 'model/routes.toml · Non-defaulting UE-03/UE-06 refusals',
+        },
+        {
+          id: 'cw-tpl-windmill-target',
+          label: 'Future Windmill Flow',
+          kind: 'metric',
+          value: 'f/uor_foundry/uorust_model_workspace',
+        },
+      ],
+    },
   },
 ];
 
@@ -94,6 +198,28 @@ async function computeSyntheticSha256(seedText: string): Promise<string> {
     hash = (hash * 31 + seedText.charCodeAt(i)) >>> 0;
   }
   return hash.toString(16).padStart(64, '0');
+}
+
+/**
+ * Computes a deterministic synchronous 64-hex state fingerprint for pure-state UI
+ * checkpoints (Stitch semantic replay boundary: pure state only, never networked custody).
+ */
+export function computeDeterministicPureStateHash(payload: unknown): string {
+  const serialized = JSON.stringify(payload) ?? '';
+  let h1 = 0x811c9dc5;
+  let h2 = 0x9e3779b9;
+  let h3 = 0x243f6a88;
+  let h4 = 0xb7e15162;
+  for (let i = 0; i < serialized.length; i++) {
+    const c = serialized.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ (c + i), 0x85ebca6b) >>> 0;
+    h3 = Math.imul(h3 ^ (c * 31), 0xc2b2ae35) >>> 0;
+    h4 = Math.imul(h4 ^ (c ^ (i << 3)), 0x27d4eb2f) >>> 0;
+  }
+  return [h1, h2, h3, h4, h1 ^ h3, h2 ^ h4, h1 ^ h2, h3 ^ h4]
+    .map((n) => (n >>> 0).toString(16).padStart(8, '0'))
+    .join('');
 }
 
 export class FoundryService {
@@ -150,6 +276,8 @@ export class FoundryService {
       'Human Release Authorization disposition is DEFERRED (AI cannot authorize release).',
     ];
 
+    const templateSpec = PROJECT_TEMPLATES.find((t) => t.id === payload.templateOriginId);
+
     const project: ProjectRecord = {
       id: projectId,
       name: payload.projectName.trim(),
@@ -166,6 +294,8 @@ export class FoundryService {
       isSyntheticDemo: true,
       acceptancePolicySchema: 'uor.acceptance-policy.example.v1',
       releaseBlockedReasons,
+      sourceRefs: payload.sourceRefs ?? templateSpec?.sourceRefs,
+      templateOriginId: payload.templateOriginId,
     };
 
     const dispatchResult = this.simAdapter.dispatchWorkflowSimulation(projectId, payload, workflow);
@@ -236,6 +366,7 @@ export class FoundryService {
       },
     ];
 
+    const serializedDeps = project.declaredInputs;
     const artifact: ArtifactProvenanceRecord = {
       id: `art-${projectId}`,
       projectId,
@@ -243,7 +374,9 @@ export class FoundryService {
       artifactFormat:
         component.id === 'lexlean-compiler'
           ? 'lexlean/production-result/1 (Simulated)'
-          : 'Synthetic Hologram v4 / model.prism.json',
+          : component.id === 'uorust-translator'
+            ? 'uorust/prism-projection/1 (Simulated)'
+            : 'Synthetic Hologram v4 / model.prism.json',
       sha256Digest: digest,
       digestMode: 'SYNTHETIC_DEMO_DIGEST',
       provenanceStatus: 'Pending',
@@ -253,6 +386,9 @@ export class FoundryService {
       evidenceRefs: verifications.map((v) => v.evidenceId),
       releaseReadiness: 'BLOCKED',
       blockingReasons: releaseBlockedReasons,
+      byteLength: new TextEncoder().encode(serializedDeps).length,
+      fragmentRecoverySpec: '2-of-3-xor-sha256-planned',
+      custodyBoundaryNote: 'Synthetic browser digest only; zero networked P2P/relay custody enabled.',
       createdAt: now,
     };
 
@@ -493,15 +629,23 @@ export class FoundryService {
 
   buildPreviewStateForProject(project: ProjectRecord): PreviewConfigState {
     const component = ENGINEERING_COMPONENTS.find((c) => c.id === project.componentId);
+    const tpl = project.templateOriginId
+      ? PROJECT_TEMPLATES.find((t) => t.id === project.templateOriginId)
+      : PROJECT_TEMPLATES.find((t) => t.componentId === project.componentId);
+
+    const baseWidgets = tpl?.previewMeta?.customWidgets ?? [];
+
     return {
       projectId: project.id,
       appTitle: project.name,
-      subtitle: `${component?.name ?? project.componentId} · ${project.sourceRevision}`,
+      subtitle:
+        tpl?.previewMeta?.subtitle ??
+        `${component?.name ?? project.componentId} · ${project.sourceRevision}`,
       layoutDensity: 'comfortable',
       showProvenanceFooter: true,
       showMonospaceOutputs: true,
-      primaryActionLabel: 'Run Simulated Action',
-      draftBannerNote: `Synthetic preview for ${project.productFamily} family · Not executed against live Windmill.`,
+      primaryActionLabel: tpl?.previewMeta?.primaryActionLabel ?? 'Run Simulated Action',
+      draftBannerNote: `Synthetic preview for ${project.productFamily} family · Not executed against live Windmill or local Cargo/Lean.`,
       customWidgets: [
         {
           id: `cw-${project.id}-rev`,
@@ -509,6 +653,7 @@ export class FoundryService {
           kind: 'note',
           value: project.sourceRevision,
         },
+        ...baseWidgets.map((w) => ({ ...w, id: `${w.id}-${project.id}` })),
       ],
       lastUpdatedAt: project.updatedAt,
     };

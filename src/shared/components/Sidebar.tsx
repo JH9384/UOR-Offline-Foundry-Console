@@ -27,6 +27,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'projects', label: 'Projects', icon: FolderKanban, group: 'operations' },
   { id: 'workflows', label: 'Engineering Workflows', icon: GitBranch, group: 'operations' },
   { id: 'verification', label: 'Verification & Evidence', icon: ShieldCheck, group: 'governance' },
+  { id: 'compliance', label: 'Source Review & Compliance', icon: Layers, group: 'governance' },
   { id: 'artifacts', label: 'Artifacts & Provenance', icon: PackageCheck, group: 'governance' },
   { id: 'approvals', label: 'Approvals & Governance', icon: Scale, group: 'governance' },
   { id: 'ai-assistance', label: 'AI Assistance', icon: Bot, group: 'infrastructure' },

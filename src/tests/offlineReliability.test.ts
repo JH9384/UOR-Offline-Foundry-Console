@@ -12,15 +12,15 @@ import {
   INITIAL_PROJECTS,
   INITIAL_VERIFICATION_SUITES,
   INITIAL_WORKFLOW_RUNS,
-} from '../data/seedFoundryData.ts';
+} from '../shared/data/seedFoundryData.ts';
 import {
   durableLocalStore,
   DurableWorkspaceSnapshot,
   LEGACY_STORAGE_KEY,
   migrateWorkspaceSnapshot,
   recoverWorkspaceSnapshot,
-} from '../services/durableLocalStore.ts';
-import { foundrySyncService } from '../services/syncService.ts';
+} from '../shared/services/durableLocalStore.ts';
+import { foundrySyncService } from '../shared/services/syncService.ts';
 
 function createBaselineSnapshot(): DurableWorkspaceSnapshot {
   return {

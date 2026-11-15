@@ -282,3 +282,51 @@ export class FailClosedLocalWindmillService implements WindmillExecutionService 
     };
   }
 }
+
+export interface UorustWorkspaceModelContract {
+  flowPath: 'f/uor_foundry/uorust_model_workspace';
+  targetWorkspace: string;
+  flowRegisteredInWorkspace: false;
+  browserCargoExecutionAllowed: false;
+  request: WindmillExecutionRequest;
+  preconditions: string[];
+  failClosedNotice: string;
+}
+
+/**
+ * Prepares the future Windmill job contract for modeling an existing Rust workspace
+ * with afflom/UORust without executing arbitrary Cargo build scripts in-browser.
+ */
+export function prepareRustWorkspaceModelContract(params: {
+  projectId: string;
+  sourceRevision: string;
+  declaredInputs: string;
+}): UorustWorkspaceModelContract {
+  const safeRevision = params.sourceRevision.trim() || 'UNSPECIFIED';
+  const requestedAt = new Date().toISOString();
+  return {
+    flowPath: 'f/uor_foundry/uorust_model_workspace',
+    targetWorkspace: WINDMILL_TARGET_CONFIG.workspace,
+    flowRegisteredInWorkspace: false,
+    browserCargoExecutionAllowed: false,
+    request: {
+      requestId: `req-uorust-${params.projectId}`,
+      idempotencyKey: `uorust-model:${params.projectId}:${safeRevision}`,
+      projectId: params.projectId,
+      workflowId: 'wf-uorust-modeling',
+      flowPath: 'f/uor_foundry/uorust_model_workspace',
+      flowVersion: '2a2b674f-candidate',
+      sourceRevision: safeRevision,
+      operatorApproved: false,
+      requestedAt,
+    },
+    preconditions: [
+      'Validated LOCAL Windmill endpoint (uor-offline-foundry) with offline Cargo.lock isolation.',
+      'Pinned afflom/UORust route table (model/routes.toml) and non-defaulting span admission (UE-03, UE-06).',
+      'Separate LexLean & PrismPM independent verification suites required after projection.',
+    ],
+    failClosedNotice:
+      `Browser preview refuses executing Cargo/build.rs directly (${params.declaredInputs || 'no Cargo path'}). Dispatch remains blocked until LOCAL Windmill is validated.`,
+  };
+}
+

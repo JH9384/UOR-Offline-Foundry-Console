@@ -7,6 +7,7 @@ const SECTION_TITLES: Record<NavigationSectionId, string> = {
   projects: 'Projects & Intake',
   workflows: 'Engineering Workflows',
   verification: 'Verification & Evidence',
+  compliance: 'Source Review & Compliance',
   'ai-assistance': 'AI Assistance (Simulated)',
   artifacts: 'Artifacts & Provenance',
   approvals: 'Approvals & Governance',

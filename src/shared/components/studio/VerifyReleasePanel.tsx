@@ -11,6 +11,9 @@ import {
 import { StatusTag } from '../StatusTag';
 import { ApprovalsView } from '../views/ApprovalsView';
 import { VerificationView } from '../views/VerificationView';
+import { SourceCompliancePanel } from './SourceCompliancePanel';
+
+export type VerifySubTab = 'evidence' | 'governance' | 'compliance';
 
 interface VerifyReleasePanelProps {
   project: ProjectRecord;
@@ -18,6 +21,8 @@ interface VerifyReleasePanelProps {
   verifications: VerificationSuiteRecord[];
   artifacts: ArtifactProvenanceRecord[];
   approvals: ApprovalDecisionRecord[];
+  activeSubTab?: VerifySubTab;
+  onChangeSubTab?: (tab: VerifySubTab) => void;
   onSelectProject: (projectId: string) => void;
   onOpenAdvancedSection: (section: NavigationSectionId) => void;
 }
@@ -28,10 +33,17 @@ export const VerifyReleasePanel: React.FC<VerifyReleasePanelProps> = ({
   verifications,
   artifacts,
   approvals,
+  activeSubTab,
+  onChangeSubTab,
   onSelectProject,
   onOpenAdvancedSection,
 }) => {
-  const [subTab, setSubTab] = useState<'evidence' | 'governance'>('evidence');
+  const [internalTab, setInternalTab] = useState<VerifySubTab>('evidence');
+  const subTab = activeSubTab ?? internalTab;
+  const setSubTab = (tab: VerifySubTab) => {
+    setInternalTab(tab);
+    onChangeSubTab?.(tab);
+  };
 
   const projectApprovals = approvals.filter((a) => a.projectId === project.id);
   const authoritySummary = verificationAuthorityService.evaluateProjectAuthority({
@@ -96,7 +108,7 @@ export const VerifyReleasePanel: React.FC<VerifyReleasePanelProps> = ({
 
       {/* Sub-navigation */}
       <div className="flex flex-wrap items-center justify-between gap-3 bg-[#111827] border border-slate-800/90 rounded-lg px-5 py-3">
-        <div className="flex items-center gap-1 p-1 bg-[#090D14] border border-slate-800 rounded-md">
+        <div className="flex flex-wrap items-center gap-1 p-1 bg-[#090D14] border border-slate-800 rounded-md">
           <button
             type="button"
             onClick={() => setSubTab('evidence')}
@@ -119,6 +131,17 @@ export const VerifyReleasePanel: React.FC<VerifyReleasePanelProps> = ({
           >
             Release Governance ({projectApprovals.length})
           </button>
+          <button
+            type="button"
+            onClick={() => setSubTab('compliance')}
+            className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+              subTab === 'compliance'
+                ? 'bg-slate-800 text-white'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Source Review &amp; Compliance
+          </button>
         </div>
 
         <button
@@ -138,10 +161,19 @@ export const VerifyReleasePanel: React.FC<VerifyReleasePanelProps> = ({
           selectedProjectId={project.id}
           onSelectProject={onSelectProject}
         />
-      ) : (
+      ) : subTab === 'governance' ? (
         <ApprovalsView
           projects={projects}
           approvals={projectApprovals.length > 0 ? projectApprovals : approvals}
+        />
+      ) : (
+        <SourceCompliancePanel
+          project={project}
+          projects={projects}
+          onSelectProject={onSelectProject}
+          verifications={verifications}
+          artifacts={artifacts}
+          approvals={approvals}
         />
       )}
     </div>

@@ -3,6 +3,7 @@ export type NavigationSectionId =
   | 'projects'
   | 'workflows'
   | 'verification'
+  | 'compliance'
   | 'ai-assistance'
   | 'artifacts'
   | 'approvals'
@@ -65,6 +66,7 @@ export type EngineeringComponentId =
   | 'lexlean-mcp-gateway'
   | 'uor-framework-ontology'
   | 'prism-stdlib'
+  | 'uorust-translator'
   | 'forge-kernel'
   | 'hologram-forge-core';
 
@@ -130,10 +132,93 @@ export interface WorkflowRun {
   stages: StageExecutionRecord[];
 }
 
+export type ReviewedSourceId = 'rule30' | 'prism-devrel' | 'stitch' | 'uorust';
+
+export type SourceIntegrationStatus =
+  | 'REFERENCE ONLY'
+  | 'CANDIDATE'
+  | 'QUALIFIED'
+  | 'CONNECTED';
+
+export type ClaimEpistemicState =
+  | 'proved'
+  | 'built'
+  | 'tested'
+  | 'observed'
+  | 'untested'
+  | 'blocked'
+  | 'refuted';
+
+export interface ClaimRegisterEntry {
+  id: string;
+  statement: string;
+  state: ClaimEpistemicState;
+  mechanism: string;
+  limitationOrBlocker?: string;
+}
+
+export interface ReviewedSourceRecord {
+  id: ReviewedSourceId;
+  name: string;
+  owner: string;
+  canonicalUrl: string;
+  reviewedCommitSha: string;
+  reviewedCommitDate: string;
+  relevantPaths: string[];
+  licenseSpdx: string;
+  attributionNotice: string;
+  documentedCapabilities: string[];
+  intendedUorUse: string;
+  verificationMechanisms: string[];
+  claimOrAcceptanceIds: string[];
+  claims: ClaimRegisterEntry[];
+  testEvidenceAndLimitations: string[];
+  securityAndQualityRequirements: string[];
+  dependenciesAndOfflineAvailability: string[];
+  openIssuesAndBlockers: string[];
+  integrationStatus: SourceIntegrationStatus;
+}
+
+export interface ProjectSourcePin {
+  sourceId: ReviewedSourceId;
+  commitSha: string;
+  role: string;
+}
+
+export interface ProjectComplianceRequirement {
+  id: string;
+  sourceId: ReviewedSourceId;
+  title: string;
+  applicable: boolean;
+  applicabilityRationale: string;
+  satisfied: boolean;
+  statusLabel: 'SATISFIED' | 'GAP' | 'BLOCKED' | 'NOT APPLICABLE';
+  gapReason?: string;
+}
+
+export interface ProjectComplianceAssessment {
+  projectId: string;
+  sourceIds: ReviewedSourceId[];
+  pinnedRevisions: Array<{
+    sourceId: ReviewedSourceId;
+    name: string;
+    repositoryUrl: string;
+    commitSha: string;
+    licenseSpdx: string;
+    status: SourceIntegrationStatus;
+  }>;
+  requirements: ProjectComplianceRequirement[];
+  verificationEvidenceSummary: string;
+  coverageGaps: string[];
+  currentQualificationState: 'NOT VERIFIED' | 'VERIFIED';
+  releaseBlockers: string[];
+  assessedAt: string;
+}
+
 export type ProjectTemplateId =
-  | 'application'
-  | 'formal-verification'
-  | 'scientific-computation';
+  | 'formal-research'
+  | 'prism-product'
+  | 'rust-workspace-model';
 
 export interface ProjectTemplateSpec {
   id: ProjectTemplateId;
@@ -147,6 +232,12 @@ export interface ProjectTemplateSpec {
   environmentDeclaration: string;
   sourceRevision: string;
   description: string;
+  sourceRefs: ProjectSourcePin[];
+  previewMeta?: {
+    primaryActionLabel: string;
+    subtitle: string;
+    customWidgets: Array<{ id: string; label: string; kind: 'metric' | 'action' | 'note'; value: string }>;
+  };
 }
 
 export interface ProjectRecord {
@@ -167,6 +258,8 @@ export interface ProjectRecord {
   isSyntheticDemo: boolean;
   acceptancePolicySchema: string;
   releaseBlockedReasons: string[];
+  sourceRefs?: ProjectSourcePin[];
+  templateOriginId?: ProjectTemplateId;
 }
 
 export interface EngineeringIntakePayload {
@@ -179,6 +272,8 @@ export interface EngineeringIntakePayload {
   environmentDeclaration: string;
   sourceRevision: string;
   acknowledgeBoundary: boolean;
+  sourceRefs?: ProjectSourcePin[];
+  templateOriginId?: ProjectTemplateId;
 }
 
 export type VerificationSuiteAuthority =
@@ -250,6 +345,9 @@ export interface ArtifactProvenanceRecord {
   releaseReadiness: 'BLOCKED' | 'SIMULATED_ONLY' | 'NOT_ASSESSED';
   blockingReasons: string[];
   createdAt: string;
+  byteLength?: number;
+  fragmentRecoverySpec?: '2-of-3-xor-sha256-planned' | 'none';
+  custodyBoundaryNote?: string;
 }
 
 export type ApprovalDisposition =
@@ -489,6 +587,8 @@ export interface ProjectCheckpoint {
   name: string;
   createdAt: string;
   note?: string;
+  stateSha256?: string;
+  semanticReplayScope?: 'DETERMINISTIC_PURE_STATE_ONLY';
   preview: PreviewConfigState;
 }
 
