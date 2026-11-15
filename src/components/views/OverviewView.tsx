@@ -1,5 +1,5 @@
-import React from 'react';
-import { ArrowRight, Lock, Plus, ShieldAlert } from 'lucide-react';
+import React, { useState } from 'react';
+import { ArrowRight, Download, Lock, Plus, ShieldAlert } from 'lucide-react';
 import { ENGINEERING_COMPONENTS } from '../../data/seedFoundryData';
 import {
   ActivityEvent,
@@ -35,12 +35,45 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   onSelectProject,
   onOpenIntake,
 }) => {
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
+
   const blockedProjects = projects.filter((p) => p.lifecycleStatus === 'RELEASE BLOCKED').length;
   const unverifiedSuites = verifications.filter((v) => v.status === 'NOT VERIFIED').length;
   const pendingApprovals = approvals.filter(
     (a) => a.disposition === 'PENDING' || a.disposition === 'DEFERRED' || a.disposition === 'BLOCKED'
   ).length;
   const connectedCount = connections.filter((c) => c.status !== 'NOT CONNECTED').length;
+
+  const handleExportActivityLog = () => {
+    const exportedAt = new Date().toISOString();
+    const payload = {
+      schema: 'uor.foundry.activity-audit-log.v1',
+      exportKind: 'CONSOLE_ACTIVITY_AUDIT_EXPORT',
+      workspace: 'uor-offline-foundry',
+      targetRuntime: 'http://127.0.0.1:8080 (NOT CONNECTED)',
+      exportedAt,
+      eventCount: activity.length,
+      notice:
+        'Browser-local console activity audit export. Simulated or advisory entries do not constitute authoritative verification or release approval.',
+      events: activity,
+    };
+
+    const dateSlug = exportedAt.slice(0, 10);
+    const filename = `uor-foundry-activity-log-${dateSlug}.json`;
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: 'application/json;charset=utf-8',
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    setExportNotice(`Exported ${activity.length} audit events to ${filename}`);
+  };
 
   return (
     <div className="space-y-6">
@@ -274,14 +307,31 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
         </section>
 
         <section className="bg-[#111827] border border-slate-800/90 rounded-lg overflow-hidden">
-          <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
-            <h2 className="font-display font-semibold text-sm text-slate-100">
-              Recent Console Activity
-            </h2>
-            <span className="text-xs font-mono text-slate-500 tabular-nums">
-              {activity.length} events
-            </span>
+          <div className="px-5 py-4 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <h2 className="font-display font-semibold text-sm text-slate-100">
+                Recent Console Activity
+              </h2>
+              <span className="text-xs font-mono text-slate-500 tabular-nums">
+                {activity.length} events
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={handleExportActivityLog}
+              disabled={activity.length === 0}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#0B0F17] hover:bg-slate-800 border border-slate-700/80 hover:border-slate-600 disabled:opacity-50 disabled:cursor-not-allowed rounded-md transition-colors whitespace-nowrap shrink-0"
+              title="Download current console activity events as JSON for audit purposes"
+            >
+              <Download className="w-3.5 h-3.5 text-blue-400" aria-hidden="true" />
+              <span>Export Activity Log</span>
+            </button>
           </div>
+          {exportNotice && (
+            <div className="px-5 py-2 bg-blue-950/25 border-b border-blue-500/25 text-[11px] font-mono text-blue-200">
+              {exportNotice}
+            </div>
+          )}
           <div className="divide-y divide-slate-800/70">
             {activity.slice(0, 5).map((ev) => (
               <div key={ev.id} className="px-5 py-3 space-y-1">
