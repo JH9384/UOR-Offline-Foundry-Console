@@ -27,13 +27,90 @@ export type ProductFamily =
 
 export type WorkflowStageId =
   | 'intake'
-  | 'plan'
+  | 'specify'
+  | 'lock'
+  | 'check'
   | 'build'
-  | 'test'
   | 'verify'
+  | 'inspect'
+  | 'preview'
   | 'review'
-  | 'package'
-  | 'release';
+  | 'export_release';
+
+export type WorkflowStageContractName =
+  | 'INTAKE'
+  | 'SPECIFY'
+  | 'LOCK'
+  | 'CHECK'
+  | 'BUILD'
+  | 'VERIFY'
+  | 'INSPECT'
+  | 'PREVIEW'
+  | 'REVIEW'
+  | 'EXPORT_RELEASE';
+
+export type PrismInputMode = 'NATIVE_PRISM' | 'EXISTING_RUST' | 'GUIDED_PRODUCT';
+
+export type PrismOutputClassId =
+  | 'model_prism_json'
+  | 'lexlean_semantic_proof'
+  | 'generated_lean_attestation'
+  | 'lcnf_named_root_export'
+  | 'cargo_crate_native'
+  | 'core_wasm_guest'
+  | 'portable_holoview'
+  | 'binary_holo_archive'
+  | 'build_source_manifests'
+  | 'verification_acceptance_records';
+
+export interface StageProducedArtifactRef {
+  path: string;
+  outputClass: PrismOutputClassId;
+  sha256Digest: string;
+  byteLength?: number;
+  verifiedOnDisk: boolean;
+}
+
+export interface LockfilePinCheck {
+  filename: 'prismpm.lock' | 'lexlean.lock' | 'standards.lock' | 'Cargo.lock';
+  required: boolean;
+  present: boolean;
+  digestPinned: boolean;
+  pinValue?: string;
+  note: string;
+}
+
+export interface OfflineLockClosureReport {
+  readyForOfflineRun: boolean;
+  checks: LockfilePinCheck[];
+  blockingReasons: string[];
+  checkedAt: string;
+}
+
+export interface UorustTypedRefusal {
+  code:
+    | 'UNSUPPORTED_RUST_ITEM'
+    | 'AMBIGUOUS_ROUTE'
+    | 'UNKNOWN_FACT'
+    | 'INVALID_UTF8'
+    | 'REQUEST_TOO_LARGE'
+    | 'BROWSER_CARGO_FORBIDDEN';
+  span?: string;
+  fact?: string;
+  message: string;
+}
+
+export interface GuidedProductDraftSpec {
+  prompt: string;
+  templateId: string;
+  facetCoverage: Array<{
+    facet: 'arch' | 'features' | 'behavior' | 'design' | 'sec' | 'qual' | 'release';
+    covered: boolean;
+    ownerModule: string;
+  }>;
+  draftLexTexPreview: string;
+  humanReviewStatus: 'PENDING_HUMAN_REVIEW' | 'APPROVED_FOR_TOOLCHAIN' | 'REJECTED';
+}
 
 export type UorGateId =
   | 'REGISTER'
@@ -107,14 +184,25 @@ export interface WorkflowDefinition {
 
 export interface StageExecutionRecord {
   stageId: WorkflowStageId;
+  stageContractName?: WorkflowStageContractName;
   label: string;
   uorGate: UorGateId;
   status: StageRunStatus;
   executedBy: string;
+  projectId?: string;
+  inputSourceIdentity?: string;
+  sourceRevision?: string;
+  toolchainIdentity?: string;
+  validatedArgs?: string[];
+  executionId?: string;
   startedAt?: string;
   completedAt?: string;
   summary: string;
+  resultOrDiagnostic?: string;
   commandOrContract?: string;
+  producedArtifacts?: StageProducedArtifactRef[];
+  evidenceRef?: string;
+  finalState?: StageRunStatus;
   isSimulated: boolean;
 }
 
@@ -132,7 +220,15 @@ export interface WorkflowRun {
   stages: StageExecutionRecord[];
 }
 
-export type ReviewedSourceId = 'rule30' | 'prism-devrel' | 'stitch' | 'uorust';
+export type ReviewedSourceId =
+  | 'rule30'
+  | 'prism-devrel'
+  | 'stitch'
+  | 'uorust'
+  | 'prismpm'
+  | 'lexlean'
+  | 'foundry'
+  | 'hologram-live';
 
 export type SourceIntegrationStatus =
   | 'REFERENCE ONLY'
@@ -243,6 +339,7 @@ export interface ProjectTemplateSpec {
 export interface ProjectRecord {
   id: string;
   name: string;
+  inputMode?: PrismInputMode;
   productFamily: ProductFamily;
   componentId: EngineeringComponentId;
   workflowId: string;
@@ -260,10 +357,14 @@ export interface ProjectRecord {
   releaseBlockedReasons: string[];
   sourceRefs?: ProjectSourcePin[];
   templateOriginId?: ProjectTemplateId;
+  lockfilesDeclared?: string[];
+  guidedProductDraft?: GuidedProductDraftSpec;
+  uorustRefusals?: UorustTypedRefusal[];
 }
 
 export interface EngineeringIntakePayload {
   projectName: string;
+  inputMode?: PrismInputMode;
   productFamily: ProductFamily;
   componentId: EngineeringComponentId;
   workflowId: string;
@@ -274,6 +375,8 @@ export interface EngineeringIntakePayload {
   acknowledgeBoundary: boolean;
   sourceRefs?: ProjectSourcePin[];
   templateOriginId?: ProjectTemplateId;
+  lockfilesDeclared?: string[];
+  guidedPrompt?: string;
 }
 
 export type VerificationSuiteAuthority =
@@ -330,11 +433,19 @@ export interface VerificationSuiteRecord {
 
 export type ArtifactLifecycleBadge = 'Validated' | 'Pending' | 'Superseded';
 
+export type HoloArchiveValidationStatus =
+  | 'VALID_HOLO_V4'
+  | 'VALID_HOLO_V5_UORC'
+  | 'REJECTED_JSON_AS_HOLO_PP3001'
+  | 'INVALID_MAGIC_OR_FOOTER'
+  | 'UNINSPECTED';
+
 export interface ArtifactProvenanceRecord {
   id: string;
   projectId: string;
   artifactName: string;
   artifactFormat: string;
+  outputClass?: PrismOutputClassId;
   sha256Digest: string;
   digestMode: 'SYNTHETIC_DEMO_DIGEST' | 'DOCUMENTED_REFERENCE_DIGEST' | 'UNAVAILABLE';
   provenanceStatus?: ArtifactLifecycleBadge;
@@ -348,6 +459,16 @@ export interface ArtifactProvenanceRecord {
   byteLength?: number;
   fragmentRecoverySpec?: '2-of-3-xor-sha256-planned' | 'none';
   custodyBoundaryNote?: string;
+  /**
+   * Direct binary/source/evidence download gating.
+   * Downloads of `.holo`, Core-Wasm, HOLOVIEW, generated source, or evidence bundles
+   * are disabled unless a verified tool-produced file exists with verified SHA-256.
+   */
+  fileExistsOnDisk?: boolean;
+  sha256Verified?: boolean;
+  archiveValidationStatus?: HoloArchiveValidationStatus;
+  coreWasmContract?: string;
+  viewProfile?: string;
 }
 
 export type ApprovalDisposition =

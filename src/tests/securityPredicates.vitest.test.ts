@@ -215,6 +215,10 @@ describe('UOR Foundry Security & Compliance Predicates (Vitest)', () => {
       'prism-devrel',
       'stitch',
       'uorust',
+      'prismpm',
+      'lexlean',
+      'foundry',
+      'hologram-live',
     ]);
     for (const src of REVIEWED_SOURCES_REGISTER) {
       expect(src.reviewedCommitSha).toMatch(/^[0-9a-f]{40}$/);

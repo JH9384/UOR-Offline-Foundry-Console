@@ -1,0 +1,101 @@
+{
+  "schema": "uor.foundry.windmill-flow-proposal.v1",
+  "epistemicCondition": "PROPOSED",
+  "registrationStatus": "PREPARED_NOT_REGISTERED",
+  "workspace": "uor-offline-foundry",
+  "flowPath": "f/uor_foundry/prism_hologram_delivery",
+  "summary": "10-stage fail-closed Prism source-to-Hologram DAG using fixed allowlisted CLI subcommands.",
+  "toolchainPins": {
+    "prismpm": "UOR-Foundation/PrismPM@b8bbabcf27392d65e58fe6e27612bdb785aa2939",
+    "lexlean": "UOR-Foundation/LexLean@71defb4c663aaec5b9a3aab04cbc6a03e7106227",
+    "foundry": "UOR-Foundation/foundry@760eaac29687628c7c66e8d492e126afa194656e",
+    "hologramLive": "Hologram-Technologies/hologram-live@cbbf97b5b8199f5865721171e582d8df6ad53166",
+    "uorust": "afflom/UORust@5868afe38012d647be00ad948949b1e384b87211",
+    "lean": "leanprover/lean4:v4.32.1"
+  },
+  "stages": [
+    {
+      "index": 1,
+      "stageContractName": "INTAKE",
+      "stageId": "intake",
+      "uorGate": "REGISTER",
+      "runnable": "backend/intake_validate.ts",
+      "fixedCommandId": null
+    },
+    {
+      "index": 2,
+      "stageContractName": "SPECIFY",
+      "stageId": "specify",
+      "uorGate": "REVIEW",
+      "runnable": "backend/prism_stage_dispatch.ts",
+      "fixedCommandId": "lexlean_fmt_check"
+    },
+    {
+      "index": 3,
+      "stageContractName": "LOCK",
+      "stageId": "lock",
+      "uorGate": "REVIEW",
+      "runnable": "backend/prism_stage_dispatch.ts",
+      "fixedCommandId": "prismpm_lock_check"
+    },
+    {
+      "index": 4,
+      "stageContractName": "CHECK",
+      "stageId": "check",
+      "uorGate": "AUTHORIZE TEST",
+      "runnable": "backend/prism_stage_dispatch.ts",
+      "fixedCommandId": "prismpm_check",
+      "note": "Check never certifies verification."
+    },
+    {
+      "index": 5,
+      "stageContractName": "BUILD",
+      "stageId": "build",
+      "uorGate": "EXECUTE",
+      "runnable": "backend/prism_stage_dispatch.ts",
+      "fixedCommandId": "prismpm_build_locked",
+      "note": "Build never equates to verification."
+    },
+    {
+      "index": 6,
+      "stageContractName": "VERIFY",
+      "stageId": "verify",
+      "uorGate": "VERIFY EVIDENCE",
+      "runnable": "backend/prism_stage_dispatch.ts",
+      "fixedCommandId": "prismpm_verify"
+    },
+    {
+      "index": 7,
+      "stageContractName": "INSPECT",
+      "stageId": "inspect",
+      "uorGate": "VERIFY EVIDENCE",
+      "runnable": "backend/prism_stage_dispatch.ts",
+      "fixedCommandId": "hologram_inspect_json"
+    },
+    {
+      "index": 8,
+      "stageContractName": "PREVIEW",
+      "stageId": "preview",
+      "uorGate": "EXECUTE",
+      "runnable": "backend/prism_stage_dispatch.ts",
+      "fixedCommandId": "hologram_run_json"
+    },
+    {
+      "index": 9,
+      "stageContractName": "REVIEW",
+      "stageId": "review",
+      "uorGate": "QUALIFY",
+      "runnable": "backend/workflow_dispatch.ts",
+      "fixedCommandId": "prismpm_qualify"
+    },
+    {
+      "index": 10,
+      "stageContractName": "EXPORT_RELEASE",
+      "stageId": "export_release",
+      "uorGate": "REVIEW RELEASE",
+      "runnable": "backend/prism_stage_dispatch.ts",
+      "fixedCommandId": "prismpm_export_browser",
+      "failClosed": true
+    }
+  ]
+}

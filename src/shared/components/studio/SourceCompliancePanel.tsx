@@ -10,6 +10,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { prepareRustWorkspaceModelContract } from '../../adapters/windmillExecutionService';
+import { evaluateProjectOfflineClosure } from '../../services/holoArchiveValidator';
 import { sourceComplianceService } from '../../services/sourceComplianceService';
 import {
   ApprovalDecisionRecord,
@@ -216,6 +217,20 @@ export const SourceCompliancePanel: React.FC<SourceCompliancePanelProps> = ({
                 </li>
               ))}
             </ul>
+            {(() => {
+              const lockReport = evaluateProjectOfflineClosure(
+                project.inputMode ?? 'NATIVE_PRISM',
+                project.lockfilesDeclared ?? []
+              );
+              return (
+                <div className="pt-1.5 border-t border-slate-800/80 text-[11px] font-mono text-slate-400">
+                  Offline Locks ({project.inputMode ?? 'NATIVE_PRISM'}):{' '}
+                  {lockReport.readyForOfflineRun
+                    ? 'ALL DECLARED PINS PRESENT'
+                    : `INCOMPLETE (${lockReport.blockingReasons.length} gaps)`}
+                </div>
+              );
+            })()}
           </div>
         </div>
 
@@ -278,6 +293,15 @@ export const SourceCompliancePanel: React.FC<SourceCompliancePanelProps> = ({
               <div>Idempotency Key: {uorustContract.request.idempotencyKey}</div>
             </div>
             <p className="text-[11px] text-amber-200">{uorustContract.failClosedNotice}</p>
+            {project.uorustRefusals && project.uorustRefusals.length > 0 && (
+              <div className="p-2.5 bg-rose-950/30 border border-rose-500/35 rounded text-[11px] font-mono text-rose-200">
+                {project.uorustRefusals.map((refusal, idx) => (
+                  <div key={idx}>
+                    [{refusal.code}] {refusal.span ?? 'global'}: {refusal.message}
+                  </div>
+                ))}
+              </div>
+            )}
             <ul className="space-y-1 text-[11px] text-slate-400 list-disc pl-4">
               {uorustContract.preconditions.map((pre, i) => (
                 <li key={i}>{pre}</li>
@@ -295,15 +319,18 @@ export const SourceCompliancePanel: React.FC<SourceCompliancePanelProps> = ({
               UOR Source Review &amp; Compliance Register
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Commit-pinned inspection of upstream afflom repositories preserving exact claim
-              states, licenses, and open blockers.
+              Commit-pinned inspection of all 8 authoritative UOR / Prism / Hologram repositories preserving exact claim states, licenses, and open blockers.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-1 p-1 bg-[#090D14] border border-slate-800 rounded-md">
             {(
               [
-                { id: 'all', label: 'All Sources (4)' },
+                { id: 'all', label: `All Sources (${reviewedSources.length})` },
+                { id: 'prismpm', label: 'PrismPM' },
+                { id: 'lexlean', label: 'LexLean' },
+                { id: 'foundry', label: 'Foundry' },
+                { id: 'hologram-live', label: 'hologram-live' },
                 { id: 'rule30', label: 'rule30' },
                 { id: 'prism-devrel', label: 'prism-devrel' },
                 { id: 'stitch', label: 'stitch' },

@@ -81,16 +81,18 @@ describe('UOR Project Templates, State Transitions & Studio Components (Vitest +
     expect(copy.lifecycleStatus).toBe('INTAKE');
     expect(copy.releaseBlockedReasons[0]).toContain('Duplicated local demo workspace');
 
-    // Step workflow simulation forward until Release gate holds BLOCKED fail-closed
+    // Step workflow simulation forward until Export / Release gate holds BLOCKED fail-closed
     let run = created.run;
     let proj = created.project;
     let vers = created.verifications;
-    for (let i = 0; i < 8; i++) {
+    expect(run.stages).toHaveLength(10);
+    for (let i = 0; i < 10; i++) {
       const step = foundryService.advanceSimulationStep(run, proj, vers);
       run = step.updatedRun;
       proj = step.updatedProject;
       vers = step.updatedVerifications;
     }
+    expect(run.currentStageId).toBe('export_release');
     expect(run.overallStatus).toBe('BLOCKED');
     expect(proj.lifecycleStatus).toBe('RELEASE BLOCKED');
     expect(vers.some((v) => v.status === 'NOT VERIFIED')).toBe(true);
@@ -147,11 +149,15 @@ describe('UOR Project Templates, State Transitions & Studio Components (Vitest +
       />
     );
 
-    // Pinned 40-char SHAs rendered
-    expect(screen.getAllByText(/2a2b674f15cd1d7bc638d4c52d0606ad135f3098/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/5f2ebfcec2bb6816c5bec6e6a17bbfdb6bab76a5/).length).toBeGreaterThan(0);
+    // Pinned 40-char SHAs rendered across all 8 authoritative repositories
+    expect(screen.getAllByText(/5868afe38012d647be00ad948949b1e384b87211/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/8af99e96f6bd9f5865721171e582d8df6ad53166/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/1607d53dfc5a34324f8102123d166d727cc66634/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/e3be477fded263029479127363f7fb6a3597e7d4/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/b8bbabcf27392d65e58fe6e27612bdb785aa2939/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/71defb4c663aaec5b9a3aab04cbc6a03e7106227/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/760eaac29687628c7c66e8d492e126afa194656e/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/cbbf97b5b8199f5865721171e582d8df6ad53166/).length).toBeGreaterThan(0);
 
     // Fail-closed UORust Windmill contract card rendered
     expect(screen.getByTestId('uorust-windmill-contract')).toBeTruthy();

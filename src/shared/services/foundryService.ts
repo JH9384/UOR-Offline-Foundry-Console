@@ -25,6 +25,10 @@ import {
   WorkflowRun,
   WorkflowStageId,
 } from '../types/foundry';
+import {
+  artifactsService,
+  BuildVerificationHoloStageResult,
+} from './artifactsService';
 
 export const PROJECT_TEMPLATES: ProjectTemplateSpec[] = [
   {
@@ -85,14 +89,19 @@ export const PROJECT_TEMPLATES: ProjectTemplateSpec[] = [
     declaredInputs: 'devrel/subjects.json, app/src/Catalog.lex.tex, lexlean.lock',
     environmentDeclaration:
       'Sanitized Prism product simulation (replaces neither PrismPM nor LexLean SDK verification)',
-    sourceRevision: 'prism-devrel/main@5f2ebfce',
+    sourceRevision: 'prism-devrel/main@8af99e96',
     description:
       'Grounded in afflom/prism-devrel: Diataxis journey stages, Catalog coverage checks, and .holo v4 delivery gates.',
     sourceRefs: [
       {
         sourceId: 'prism-devrel',
-        commitSha: '5f2ebfcec2bb6816c5bec6e6a17bbfdb6bab76a5',
+        commitSha: '8af99e96f6bd9f5865721171e582d8df6ad53166',
         role: 'Source-pinned DevRel catalog, Diataxis & template contract reference',
+      },
+      {
+        sourceId: 'prismpm',
+        commitSha: 'b8bbabcf27392d65e58fe6e27612bdb785aa2939',
+        role: 'Target SDK packager & .holo v4 binary compiler',
       },
       {
         sourceId: 'stitch',
@@ -131,18 +140,18 @@ export const PROJECT_TEMPLATES: ProjectTemplateSpec[] = [
     declaredInputs: 'Cargo.toml, Cargo.lock, model/routes.toml, crates/certified/manifest.toml',
     environmentDeclaration:
       'Local Windmill UORust runner contract (f/uor_foundry/uorust_model_workspace — NOT CONNECTED)',
-    sourceRevision: 'UORust/main@2a2b674f',
+    sourceRevision: 'UORust/main@5868afe3',
     description:
       'Grounded in afflom/UORust: Cargo AST route tables, typed source-span refusals, and fail-closed Windmill runnable contract.',
     sourceRefs: [
       {
         sourceId: 'uorust',
-        commitSha: '2a2b674f15cd1d7bc638d4c52d0606ad135f3098',
+        commitSha: '5868afe38012d647be00ad948949b1e384b87211',
         role: 'Primary Cargo -> Prism/LexLean translator & span refusal contract',
       },
       {
         sourceId: 'prism-devrel',
-        commitSha: '5f2ebfcec2bb6816c5bec6e6a17bbfdb6bab76a5',
+        commitSha: '8af99e96f6bd9f5865721171e582d8df6ad53166',
         role: 'R1-R6 template conformance & facet projection alignment',
       },
       {
@@ -266,11 +275,24 @@ export class FoundryService {
       WORKFLOW_CATALOG.find((w) => w.id === payload.workflowId) ?? WORKFLOW_CATALOG[0];
 
     const isUnverifiedComponent = component.epistemicCondition === 'UNVERIFIED';
+    const inferredInputMode =
+      payload.inputMode ??
+      (component.id === 'uorust-translator' || payload.templateOriginId === 'rust-workspace-model'
+        ? 'EXISTING_RUST'
+        : payload.templateOriginId === 'prism-product' || Boolean(payload.guidedPrompt?.trim())
+          ? 'GUIDED_PRODUCT'
+          : 'NATIVE_PRISM');
 
     const releaseBlockedReasons = [
       'Simulated browser intake only — live Windmill runtime (http://127.0.0.1:8080) is NOT CONNECTED.',
       ...(isUnverifiedComponent
         ? [`Selected component "${component.name}" has UNVERIFIED integration status.`]
+        : []),
+      ...(inferredInputMode === 'GUIDED_PRODUCT'
+        ? ['Guided Product draft specification requires explicit human review before PrismPM compilation.']
+        : []),
+      ...(inferredInputMode === 'EXISTING_RUST'
+        ? ['Cargo compilation evidence never equates to Prism application verification.']
         : []),
       'Forge Kernel ABI & Browser/Identity Acceptance Suites remain NOT VERIFIED.',
       'Human Release Authorization disposition is DEFERRED (AI cannot authorize release).',
@@ -278,9 +300,50 @@ export class FoundryService {
 
     const templateSpec = PROJECT_TEMPLATES.find((t) => t.id === payload.templateOriginId);
 
+    const parsedDeclaredLockfiles =
+      payload.lockfilesDeclared && payload.lockfilesDeclared.length > 0
+        ? payload.lockfilesDeclared
+        : ['prismpm.lock', 'lexlean.lock', 'standards.lock', ...(inferredInputMode === 'EXISTING_RUST' ? ['Cargo.lock'] : [])].filter(
+            (name) =>
+              payload.declaredInputs.toLowerCase().includes(name.toLowerCase()) ||
+              inferredInputMode !== 'NATIVE_PRISM' ||
+              name !== 'Cargo.lock'
+          );
+
+    const guidedProductDraft =
+      inferredInputMode === 'GUIDED_PRODUCT'
+        ? {
+            prompt: (payload.guidedPrompt || payload.purpose).trim(),
+            templateId: 'uor/template-contract/1',
+            facetCoverage: (['arch', 'features', 'behavior', 'design', 'sec', 'qual', 'release'] as const).map(
+              (facet) => ({
+                facet,
+                covered: true,
+                ownerModule: `Generated.${facet[0].toUpperCase()}${facet.slice(1)}`,
+              })
+            ),
+            draftLexTexPreview: `\\begin{lexlean}\\begin{semanticmodule}{"spec":"lexlean/semantic-module/1","name":"${payload.projectName.replace(/[^a-zA-Z0-9]/g, '') || 'GuidedApp'}"}\\end{semanticmodule}\\end{lexlean}`,
+            humanReviewStatus: 'PENDING_HUMAN_REVIEW' as const,
+          }
+        : undefined;
+
+    const uorustRefusals =
+      inferredInputMode === 'EXISTING_RUST'
+        ? [
+            {
+              code: 'BROWSER_CARGO_FORBIDDEN' as const,
+              span: 'Cargo.toml:1:1',
+              fact: 'local-mac-studio-required',
+              message:
+                'Browser sandbox cannot execute UORust AST extraction or cargo --locked --offline; dispatch via fixed Windmill command registry.',
+            },
+          ]
+        : undefined;
+
     const project: ProjectRecord = {
       id: projectId,
       name: payload.projectName.trim(),
+      inputMode: inferredInputMode,
       productFamily: payload.productFamily,
       componentId: component.id,
       workflowId: workflow.id,
@@ -296,6 +359,9 @@ export class FoundryService {
       releaseBlockedReasons,
       sourceRefs: payload.sourceRefs ?? templateSpec?.sourceRefs,
       templateOriginId: payload.templateOriginId,
+      lockfilesDeclared: parsedDeclaredLockfiles,
+      guidedProductDraft,
+      uorustRefusals,
     };
 
     const dispatchResult = this.simAdapter.dispatchWorkflowSimulation(projectId, payload, workflow);
@@ -377,6 +443,12 @@ export class FoundryService {
           : component.id === 'uorust-translator'
             ? 'uorust/prism-projection/1 (Simulated)'
             : 'Synthetic Hologram v4 / model.prism.json',
+      outputClass:
+        component.id === 'lexlean-compiler'
+          ? 'generated_lean_attestation'
+          : component.id === 'uorust-translator'
+            ? 'model_prism_json'
+            : 'binary_holo_archive',
       sha256Digest: digest,
       digestMode: 'SYNTHETIC_DEMO_DIGEST',
       provenanceStatus: 'Pending',
@@ -389,6 +461,9 @@ export class FoundryService {
       byteLength: new TextEncoder().encode(serializedDeps).length,
       fragmentRecoverySpec: '2-of-3-xor-sha256-planned',
       custodyBoundaryNote: 'Synthetic browser digest only; zero networked P2P/relay custody enabled.',
+      fileExistsOnDisk: false,
+      sha256Verified: false,
+      archiveValidationStatus: 'UNINSPECTED',
       createdAt: now,
     };
 
@@ -497,26 +572,35 @@ export class FoundryService {
     }
 
     const stageId: WorkflowStageId = activeStage.stageId;
-    const isReleaseStage = stageId === 'release';
+    const isReleaseStage = stageId === 'export_release';
 
     let outcome: 'COMPLETED' | 'BLOCKED' = 'COMPLETED';
     let summary = `Simulated stage "${activeStage.label}" completed in browser sandbox.`;
 
-    if (stageId === 'plan') {
-      summary = `Planned synthetic execution stages targeting ${run.windmillTargetPath}.`;
+    if (stageId === 'intake') {
+      summary = `Registered ${project.inputMode ?? 'NATIVE_PRISM'} project "${project.name}" targeting ${run.windmillTargetPath}.`;
+    } else if (stageId === 'specify') {
+      summary =
+        project.inputMode === 'GUIDED_PRODUCT'
+          ? 'Guided Product draft .lex.tex staged for explicit human review (AI draft is non-authoritative).'
+          : 'Simulated LexLean specification & facet schema boundary validated.';
+    } else if (stageId === 'lock') {
+      summary = 'Simulated offline lockfile check inspected prismpm.lock / lexlean.lock / standards.lock declarations.';
+    } else if (stageId === 'check') {
+      summary = 'Simulated static check (`lexlean check` / `prismpm check`) completed (check never proves verification).';
     } else if (stageId === 'build') {
-      summary = 'Simulated closed-model build completed (remember: build does not establish verification).';
-    } else if (stageId === 'test') {
-      summary = 'Simulated fixture & unit conformance check completed (mock demo result).';
+      summary = 'Simulated build inventory assembled (model.prism.json, Core-Wasm, HOLOVIEW, .holo v4); build never equates to verification.';
     } else if (stageId === 'verify') {
       summary = 'Simulated component check ran, while independent Forge Kernel & Browser suites remain NOT VERIFIED.';
+    } else if (stageId === 'inspect') {
+      summary = 'Simulated `.holo` / `Core-Wasm` inspection checked metadata boundaries (real on-disk binary inspection requires Mac Studio).';
+    } else if (stageId === 'preview') {
+      summary = 'Simulated `hologram plan/run --json` browser surface inspected (no real Core-Wasm executed in sandbox).';
     } else if (stageId === 'review') {
-      summary = 'Simulated technical review inspected evidence gaps and flagged missing independent suites.';
-    } else if (stageId === 'package') {
-      summary = 'Simulated synthetic artifact manifest assembled; Release gate stays fail-closed.';
+      summary = 'Simulated technical qualification review inspected evidence gaps and flagged missing independent suites.';
     } else if (isReleaseStage) {
       outcome = 'BLOCKED';
-      summary = 'Fail-closed: Release cannot proceed without independent verification evidence and human governance approval.';
+      summary = 'Fail-closed: Export / Release cannot proceed without on-disk binary SHA-256 verification, independent evidence, and human governance approval.';
     }
 
     const res = this.simAdapter.advanceSimulatedStage(run, stageId, outcome, summary);
@@ -540,7 +624,7 @@ export class FoundryService {
       ...project,
       updatedAt: now,
       lifecycleStatus:
-        nextStage === 'release' || updatedRun.overallStatus === 'BLOCKED'
+        nextStage === 'export_release' || updatedRun.overallStatus === 'BLOCKED'
           ? 'RELEASE BLOCKED'
           : nextStage === 'review'
             ? 'REVIEW REQUIRED'
@@ -558,6 +642,18 @@ export class FoundryService {
     };
 
     return { updatedRun, updatedProject, updatedVerifications, activity };
+  }
+
+  /**
+   * Delegates build-verification stage `.holo` archive structural & manifest checks
+   * to the Artifacts service Hologram v4 header parser.
+   */
+  async verifyBuildHoloArtifact(params: {
+    artifact: ArtifactProvenanceRecord;
+    project: ProjectRecord;
+    archiveBytes?: Uint8Array;
+  }): Promise<BuildVerificationHoloStageResult> {
+    return artifactsService.verifyBuildStageHoloArchive(params);
   }
 
   probeWindmillRuntime(): { ok: false; reason: string } {
@@ -591,7 +687,7 @@ export class FoundryService {
     } else if (category === 'planning') {
       responseSummary = project
         ? `For "${project.name}", declare sanitized inputs under UOR-Workflow intake rules, lock dependencies with lexlean.lock, and separate simulated Windmill orchestration from local Mac Studio verification runners. Any unverified suite will automatically hold the Release gate at BLOCKED.`
-        : 'Plan workflows around the 8-stage console pipeline (Intake -> Plan -> Build -> Test -> Verify -> Review -> Package -> Release), targeting Windmill workspace "uor-offline-foundry" at http://127.0.0.1:8080.';
+        : 'Plan workflows around the 10-stage contract pipeline (Intake -> Specify -> Lock -> Check -> Build -> Verify -> Inspect -> Preview -> Review -> Export / Release), targeting Windmill workspace "uor-offline-foundry" at http://127.0.0.1:8080.';
       observations.push('Target Windmill flow path: /api/w/uor-offline-foundry/jobs/run/f/{flow_path}');
       observations.push('Keep raw logs, execution IDs, and credentials strictly in local controlled storage.');
       citedRepositories.push('windmill-labs/windmill', 'JH9384/UOR-Workflow');
@@ -896,7 +992,7 @@ export class FoundryService {
         assistantMessage: {
           id: `msg-a-${Date.now() + 1}`,
           role: 'assistant',
-          content: `Simulated response (Windmill 127.0.0.1:8080 NOT CONNECTED): I queued a local offline action for "${params.project.name}" targeting workspace "uor-offline-foundry". You can step through the simulated 8-stage pipeline in Build mode right now without any live server connection.`,
+          content: `Simulated response (Windmill 127.0.0.1:8080 NOT CONNECTED): I queued a local offline action for "${params.project.name}" targeting workspace "uor-offline-foundry". You can step through the simulated 10-stage pipeline in Build mode right now without any live server connection.`,
           timestamp: now,
           suggestedWorkflowAction: {
             label: 'Open Build & Workflows',

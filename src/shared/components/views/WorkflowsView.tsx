@@ -83,7 +83,7 @@ export const WorkflowsView: React.FC<WorkflowsViewProps> = ({
               <StatusTag value="SIMULATED" />
             </div>
             <p className="text-xs text-slate-400">
-              Intake → Plan → Build → Test → Verify → Review → Package → Release
+              Intake → Specify → Lock → Check → Build → Verify → Inspect → Preview → Review → Export / Release
             </p>
           </div>
 
@@ -150,8 +150,8 @@ export const WorkflowsView: React.FC<WorkflowsViewProps> = ({
               <StatusTag value={activeRun.overallStatus === 'BLOCKED' ? 'BLOCKED' : activeRun.overallStatus} />
             </div>
 
-            {/* 8-Stage Stepper Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+            {/* 10-Stage Stepper Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
               {activeRun.stages.map((stage, idx) => (
                 <div
                   key={stage.stageId}
@@ -166,7 +166,7 @@ export const WorkflowsView: React.FC<WorkflowsViewProps> = ({
                   <div className="space-y-2">
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-mono text-xs text-slate-400 tabular-nums">
-                        0{idx + 1}. {stage.label}
+                        {String(idx + 1).padStart(2, '0')}. {stage.label}
                       </span>
                       <StatusTag value={stage.status} />
                     </div>
@@ -187,8 +187,8 @@ export const WorkflowsView: React.FC<WorkflowsViewProps> = ({
               <div className="flex items-start gap-2.5 text-xs text-slate-300">
                 <Lock className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" aria-hidden="true" />
                 <div>
-                  <span className="font-medium text-amber-300">Fail-Closed Release Gate:</span>{' '}
-                  Stage 08 (Release) remains blocked until independent verification suites pass on local Mac Studio hardware and a human release authority records approval.
+                  <span className="font-medium text-amber-300">Fail-Closed Export / Release Gate:</span>{' '}
+                  Stage 10 (Export / Release) remains blocked until on-disk SHA-256 verification and independent verification suites pass on local Mac Studio hardware and a human release authority records approval.
                 </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">

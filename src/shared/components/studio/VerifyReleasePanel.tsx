@@ -102,6 +102,11 @@ export const VerifyReleasePanel: React.FC<VerifyReleasePanelProps> = ({
                   'All independent suites authenticated and human APPROVED_FOR_RELEASE recorded.'}
               </span>
             </div>
+            {verifications.some((v) => v.projectId === project.id && v.authenticationStatus === 'STALE') && (
+              <div className="text-[11px] font-mono text-rose-300 pt-1">
+                Source change detected: prior verification evidence marked STALE (fresh re-run required).
+              </div>
+            )}
           </div>
         </div>
       </section>

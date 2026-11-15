@@ -190,44 +190,81 @@ export class SimulatedLocalAdapter implements WindmillClientAdapter {
     const now = new Date().toISOString();
     const runId = `sim-run-${Math.random().toString(36).slice(2, 8)}`;
 
+    const stageContractMap: Record<WorkflowStageId, 'INTAKE' | 'SPECIFY' | 'LOCK' | 'CHECK' | 'BUILD' | 'VERIFY' | 'INSPECT' | 'PREVIEW' | 'REVIEW' | 'EXPORT_RELEASE'> = {
+      intake: 'INTAKE',
+      specify: 'SPECIFY',
+      lock: 'LOCK',
+      check: 'CHECK',
+      build: 'BUILD',
+      verify: 'VERIFY',
+      inspect: 'INSPECT',
+      preview: 'PREVIEW',
+      review: 'REVIEW',
+      export_release: 'EXPORT_RELEASE',
+    };
+
     const stages = workflow.stages.map((stage, index) => {
+      const contractName = stageContractMap[stage.id] ?? 'INTAKE';
+      const baseAudit = {
+        stageContractName: contractName,
+        projectId,
+        inputSourceIdentity: payload.declaredInputs,
+        sourceRevision: payload.sourceRevision,
+        toolchainIdentity: 'Simulated Browser Sandbox (Mac Studio Windmill NOT CONNECTED)',
+        validatedArgs: [stage.id, '--project', payload.declaredInputs.split(',')[0]?.trim() || 'workspace'],
+        executionId: `${runId}-${stage.id}`,
+        producedArtifacts: [],
+        evidenceRef: `sim-ev-${runId}-${stage.id}`,
+      };
+
       if (index === 0) {
         return {
+          ...baseAudit,
           stageId: stage.id,
           label: stage.label,
           uorGate: stage.uorGate,
           status: 'COMPLETED' as const,
+          finalState: 'COMPLETED' as const,
           executedBy: 'Simulated Local Intake Controller',
           startedAt: now,
           completedAt: now,
-          summary: `Synthetic intake registered for family "${payload.productFamily}" at revision ${payload.sourceRevision}.`,
-          commandOrContract: 'uor.acceptance-policy.example.v1 (REGISTER)',
+          summary: `Synthetic intake (${payload.inputMode ?? 'NATIVE_PRISM'}) registered for "${payload.productFamily}" at revision ${payload.sourceRevision}.`,
+          resultOrDiagnostic: 'INTAKE_ACCEPTED_SIMULATED',
+          commandOrContract: 'uor.acceptance-policy.example.v1 (INTAKE)',
           isSimulated: true,
         };
       }
       if (index === 1) {
         return {
+          ...baseAudit,
           stageId: stage.id,
           label: stage.label,
           uorGate: stage.uorGate,
           status: 'RUNNING' as const,
-          executedBy: 'Simulated Planner (Mock Windmill Step)',
+          finalState: 'RUNNING' as const,
+          executedBy: 'Simulated Specification Checker',
           startedAt: now,
-          summary: `Preparing synthetic execution plan targeting ${workflow.windmillFlowPath}.`,
+          summary: `Validating input mode specification (${payload.inputMode ?? 'NATIVE_PRISM'}) targeting ${workflow.windmillFlowPath}.`,
+          resultOrDiagnostic: 'AWAITING_OPERATOR_STEP',
           commandOrContract: WINDMILL_ENDPOINTS.runFlowByPath(this.targetWorkspace, workflow.windmillFlowPath),
           isSimulated: true,
         };
       }
       return {
+        ...baseAudit,
         stageId: stage.id,
         label: stage.label,
         uorGate: stage.uorGate,
         status: 'PENDING' as const,
+        finalState: 'PENDING' as const,
         executedBy: stage.ownerBoundary,
-        summary: `Awaiting previous stage completion (${stage.failClosedRule}).`,
+        summary: `Pending prior stage (${stage.failClosedRule}).`,
+        resultOrDiagnostic: 'PENDING',
         isSimulated: true,
       };
     });
+
+    const secondStageId = workflow.stages[1]?.id ?? 'specify';
 
     return {
       ok: true,
@@ -237,7 +274,7 @@ export class SimulatedLocalAdapter implements WindmillClientAdapter {
         projectId,
         workflowId: workflow.id,
         workflowName: workflow.name,
-        currentStageId: 'plan',
+        currentStageId: secondStageId,
         overallStatus: 'RUNNING',
         executionMode: 'BROWSER_SIMULATION',
         windmillTargetPath: WINDMILL_ENDPOINTS.runFlowByPath(this.targetWorkspace, workflow.windmillFlowPath),
@@ -265,20 +302,25 @@ export class SimulatedLocalAdapter implements WindmillClientAdapter {
         return {
           ...stage,
           status: outcome,
+          finalState: outcome,
           startedAt: stage.startedAt ?? now,
           completedAt: outcome === 'COMPLETED' || outcome === 'FAILED' ? now : undefined,
           summary,
+          resultOrDiagnostic: summary,
         };
       }
       if (outcome === 'COMPLETED' && idx === targetIdx + 1 && stage.status === 'PENDING') {
-        const isReleaseGate = stage.stageId === 'release';
+        const isReleaseGate = stage.stageId === 'export_release';
+        const nextStatus = isReleaseGate ? ('BLOCKED' as const) : ('RUNNING' as const);
         return {
           ...stage,
-          status: isReleaseGate ? ('BLOCKED' as const) : ('RUNNING' as const),
+          status: nextStatus,
+          finalState: nextStatus,
           startedAt: now,
           summary: isReleaseGate
-            ? 'Fail-closed: Release Authorization requires independent evidence and human governance sign-off.'
+            ? 'Fail-closed: Export / Release requires authenticated LexLean/PrismPM/Hologram evidence and human APPROVED_FOR_RELEASE.'
             : `Simulated execution started for ${stage.label}.`,
+          resultOrDiagnostic: isReleaseGate ? 'RELEASE_BLOCKED_FAIL_CLOSED' : 'STAGE_ACTIVE_SIMULATED',
         };
       }
       return stage;
@@ -292,7 +334,7 @@ export class SimulatedLocalAdapter implements WindmillClientAdapter {
     const overallStatus =
       outcome === 'FAILED'
         ? 'FAILED'
-        : outcome === 'BLOCKED' || nextActiveStage === 'release'
+        : outcome === 'BLOCKED' || nextActiveStage === 'export_release'
           ? 'BLOCKED'
           : 'RUNNING';
 

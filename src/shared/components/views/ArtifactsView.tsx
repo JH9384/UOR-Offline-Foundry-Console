@@ -1,14 +1,26 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   Download,
+  FileCheck2,
+  FileWarning,
   Lock,
   Maximize2,
   Search,
+  ShieldCheck,
   X,
 } from 'lucide-react';
+import {
+  buildHologramV4Buffer,
+  HologramV4ParsedArtifact,
+  parseHologramV4Header,
+} from '../../services/hologramService';
+import {
+  canDownloadVerifiedArtifact,
+  getDirectDownloadBlockReason,
+} from '../../services/holoArchiveValidator';
 import {
   ArtifactLifecycleBadge,
   ArtifactProvenanceRecord,
@@ -21,6 +33,7 @@ interface ArtifactsViewProps {
   projects: ProjectRecord[];
   artifacts: ArtifactProvenanceRecord[];
   selectedProjectId: string;
+  artifactBuffers?: Record<string, ArrayBuffer>;
 }
 
 type ArtifactStatusFilter =
@@ -40,6 +53,7 @@ export const ArtifactsView: React.FC<ArtifactsViewProps> = ({
   projects,
   artifacts,
   selectedProjectId,
+  artifactBuffers,
 }) => {
   const [selectedId, setSelectedId] = useState<string>(
     artifacts.find((a) => a.projectId === selectedProjectId)?.id ?? artifacts[0]?.id ?? ''
@@ -50,6 +64,10 @@ export const ArtifactsView: React.FC<ArtifactsViewProps> = ({
   const [lastExportNotice, setLastExportNotice] = useState<string | null>(null);
   const [metadataExpanded, setMetadataExpanded] = useState<boolean>(false);
   const [metadataModalOpen, setMetadataModalOpen] = useState<boolean>(false);
+  const [holoInspection, setHoloInspection] = useState<HologramV4ParsedArtifact | null>(null);
+  const [inspectingHolo, setInspectingHolo] = useState<boolean>(false);
+  const [uploadedBuffers, setUploadedBuffers] = useState<Record<string, ArrayBuffer>>({});
+  const [autoScanStatus, setAutoScanStatus] = useState<string | null>(null);
 
   const filteredArtifacts = artifacts.filter((art) => {
     const proj = projects.find((p) => p.id === art.projectId);
@@ -185,6 +203,97 @@ export const ArtifactsView: React.FC<ArtifactsViewProps> = ({
     URL.revokeObjectURL(url);
 
     setLastExportNotice(`Generated simulated JSON download: ${filename}`);
+  };
+
+  const isHoloArtifactSelected = Boolean(
+    activeArtifact &&
+      (activeArtifact.artifactName.toLowerCase().includes('.holo') ||
+        activeArtifact.outputClass === 'binary_holo_archive' ||
+        activeArtifact.artifactFormat.toLowerCase().includes('holo'))
+  );
+
+  // Trigger an automatic Hologram v4 validation scan whenever a `.holo` file or
+  // buffered `.holo` artifact record is selected.
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeArtifact || !isHoloArtifactSelected) {
+      setHoloInspection(null);
+      setAutoScanStatus(null);
+      return;
+    }
+
+    const buffer =
+      uploadedBuffers[activeArtifact.id] ?? artifactBuffers?.[activeArtifact.id];
+
+    if (!buffer) {
+      setHoloInspection(null);
+      setAutoScanStatus(
+        `Auto-Scan (${activeArtifact.artifactName}): awaiting local .holo file selection to inspect HOLO\\x04\\0 bytes, manifest, and SHA-256.`
+      );
+      return;
+    }
+
+    setInspectingHolo(true);
+    parseHologramV4Header(buffer, {
+      expectedProjectId: activeProject?.id,
+      expectedSourceRevision: activeProject?.sourceRevision,
+    })
+      .then((report) => {
+        if (cancelled) return;
+        setHoloInspection(report);
+        setAutoScanStatus(
+          `Auto-Scan (${activeArtifact.artifactName}): ${report.status} (${report.byteLength} bytes · sha256:${report.sha256Hash.slice(0, 12)}...)`
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setInspectingHolo(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeArtifact?.id,
+    activeArtifact?.artifactName,
+    activeProject?.id,
+    activeProject?.sourceRevision,
+    isHoloArtifactSelected,
+    uploadedBuffers,
+    artifactBuffers,
+  ]);
+
+  const runHoloBufferInspection = async (buffer: ArrayBuffer, label: string) => {
+    setInspectingHolo(true);
+    try {
+      const report = await parseHologramV4Header(buffer, {
+        expectedProjectId: activeProject?.id,
+        expectedSourceRevision: activeProject?.sourceRevision,
+      });
+      setHoloInspection(report);
+      setAutoScanStatus(
+        `Auto-Scan (${label}): ${report.status} (${report.byteLength} bytes · sha256:${report.sha256Hash.slice(0, 12)}...)`
+      );
+      setLastExportNotice(`Inspected ${label}: ${report.status} (${report.byteLength} bytes)`);
+    } finally {
+      setInspectingHolo(false);
+    }
+  };
+
+  const handleInspectFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const buffer =
+      typeof file.arrayBuffer === 'function'
+        ? await file.arrayBuffer()
+        : await new Response(file).arrayBuffer();
+    if (activeArtifact) {
+      setUploadedBuffers((prev) => ({
+        ...prev,
+        [activeArtifact.id]: buffer,
+      }));
+    }
+    await runHoloBufferInspection(buffer, file.name);
+    e.target.value = '';
   };
 
   return (
@@ -391,10 +500,202 @@ export const ArtifactsView: React.FC<ArtifactsViewProps> = ({
               <div>
                 <dt className="text-slate-500">Referenced Evidence IDs</dt>
                 <dd className="mt-1 font-mono text-slate-300">
-                  {activeArtifact.evidenceRefs.join(' · ')}
+                  {activeArtifact.evidenceRefs.length > 0
+                    ? activeArtifact.evidenceRefs.join(' · ')
+                    : 'NONE RECORDED'}
                 </dd>
               </div>
             </dl>
+
+            {/* Direct Binary / Source / Runtime / Evidence Download Gate */}
+            {(() => {
+              const directAllowed = canDownloadVerifiedArtifact(activeArtifact);
+              const blockReason = getDirectDownloadBlockReason(activeArtifact);
+              const downloadTargets = [
+                '.holo Archive Binary',
+                'Generated Source Archive',
+                'Core-Wasm + HOLOVIEW Bundle',
+                'Verified Evidence Bundle',
+              ];
+              return (
+                <div
+                  className="p-4 bg-[#0B0F17] border border-slate-800 rounded-md space-y-3"
+                  data-testid="direct-download-gate"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-xs font-medium text-slate-200">
+                      <ShieldCheck className="w-4 h-4 text-sky-400 shrink-0" aria-hidden="true" />
+                      <span>Direct Verified Output Downloads (SHA-256 Gated)</span>
+                    </div>
+                    <StatusTag value={directAllowed ? 'Validated' : 'BLOCKED'} />
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {downloadTargets.map((label) => (
+                      <button
+                        key={label}
+                        type="button"
+                        disabled={!directAllowed}
+                        title={blockReason ?? `Download verified ${label}`}
+                        className="inline-flex items-center justify-between gap-2 px-3 py-2 text-xs font-mono border border-slate-800 bg-[#111827] text-slate-400 disabled:opacity-60 disabled:cursor-not-allowed rounded"
+                      >
+                        <span className="truncate">{label}</span>
+                        <Lock className="w-3.5 h-3.5 text-amber-400 shrink-0" aria-hidden="true" />
+                      </button>
+                    ))}
+                  </div>
+                  {blockReason && (
+                    <p className="text-[11px] text-amber-300" data-testid="direct-download-block-reason">
+                      {blockReason}
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* Physical .holo Binary Archive Validator (HOLO\x04\0 / UORC\x02\x01 / PP3001) */}
+            <div className="p-4 bg-[#0B0F17] border border-slate-800 rounded-md space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h4 className="text-xs font-medium text-slate-200">
+                    Physical `.holo` Binary Archive Inspector (`HOLO\x04\0` / `UORC\x02\x01`)
+                  </h4>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Verifies real binary magic &amp; embedded Core-Wasm/HOLOVIEW headers; rejects JSON masquerading as `.holo` with `PP3001`.
+                  </p>
+                </div>
+                <StatusTag value={activeArtifact.archiveValidationStatus ?? 'UNINSPECTED'} />
+              </div>
+
+              {(activeArtifact.coreWasmContract || activeArtifact.viewProfile) && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px] font-mono text-slate-300">
+                  {activeArtifact.coreWasmContract && (
+                    <div className="p-2 bg-[#111827] border border-slate-800 rounded">
+                      Core-Wasm: {activeArtifact.coreWasmContract}
+                    </div>
+                  )}
+                  {activeArtifact.viewProfile && (
+                    <div className="p-2 bg-[#111827] border border-slate-800 rounded">
+                      View Profile: {activeArtifact.viewProfile}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {autoScanStatus && (
+                <div
+                  className="px-2.5 py-1.5 rounded bg-[#111827] border border-slate-800 text-[11px] font-mono text-slate-300"
+                  data-testid="holo-auto-scan-status"
+                >
+                  {autoScanStatus}
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#111827] border border-slate-700 hover:border-slate-600 rounded cursor-pointer">
+                  <span>Inspect Local `.holo` File</span>
+                  <input
+                    type="file"
+                    accept=".holo,.bin,.json"
+                    onChange={handleInspectFileUpload}
+                    className="sr-only"
+                    aria-label="Inspect local .holo archive bytes"
+                    data-testid="holo-file-input"
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={inspectingHolo}
+                  onClick={() =>
+                    runHoloBufferInspection(
+                      buildHologramV4Buffer({
+                        projectId: activeProject?.id ?? 'proj-prism-calc',
+                        projectName: activeProject?.name ?? 'PrismPM Calculator Reference',
+                        sourceRevision: activeProject?.sourceRevision ?? 'prismpm/main@b8bbabcf',
+                      }),
+                      'self-test HOLO v4 buffer'
+                    )
+                  }
+                  className="px-2.5 py-1.5 text-[11px] font-mono text-sky-300 border border-sky-500/35 hover:bg-sky-950/30 rounded"
+                >
+                  Test Valid `HOLO\x04\0` Bytes
+                </button>
+                <button
+                  type="button"
+                  disabled={inspectingHolo}
+                  onClick={() =>
+                    runHoloBufferInspection(
+                      new TextEncoder().encode('{"fake":"holo-json"}').buffer,
+                      'self-test JSON-as-.holo'
+                    )
+                  }
+                  className="px-2.5 py-1.5 text-[11px] font-mono text-amber-300 border border-amber-500/35 hover:bg-amber-950/30 rounded"
+                >
+                  Test `PP3001` JSON Rejection
+                </button>
+                <button
+                  type="button"
+                  disabled={inspectingHolo}
+                  onClick={() =>
+                    runHoloBufferInspection(
+                      buildHologramV4Buffer({
+                        projectId: activeProject?.id ?? 'proj-prism-calc',
+                        projectName: activeProject?.name ?? 'PrismPM Calculator Reference',
+                        sourceRevision: activeProject?.sourceRevision ?? 'prismpm/main@b8bbabcf',
+                        corruptManifest: true,
+                      }),
+                      'self-test corrupt v4 manifest'
+                    )
+                  }
+                  className="px-2.5 py-1.5 text-[11px] font-mono text-rose-300 border border-rose-500/35 hover:bg-rose-950/30 rounded"
+                >
+                  Test Corrupt Manifest Rejection
+                </button>
+              </div>
+
+              {holoInspection && (
+                <div
+                  className={`p-3 rounded border text-xs space-y-2 ${
+                    holoInspection.valid
+                      ? 'bg-emerald-950/20 border-emerald-500/35 text-emerald-200'
+                      : 'bg-rose-950/25 border-rose-500/35 text-rose-200'
+                  }`}
+                  data-testid="holo-inspection-result"
+                >
+                  <div className="flex items-center gap-2 font-mono font-semibold">
+                    {holoInspection.valid ? (
+                      <FileCheck2 className="w-4 h-4 text-emerald-400 shrink-0" aria-hidden="true" />
+                    ) : (
+                      <FileWarning className="w-4 h-4 text-rose-400 shrink-0" aria-hidden="true" />
+                    )}
+                    <span>
+                      {holoInspection.status} {holoInspection.errorCode ? `(${holoInspection.errorCode})` : ''}
+                    </span>
+                  </div>
+                  <p className="text-[11px]">{holoInspection.diagnostic}</p>
+                  {holoInspection.header && (
+                    <div className="font-mono text-[10px] opacity-90 flex flex-wrap gap-x-3 gap-y-1">
+                      <span>header: v{holoInspection.header.majorVersion}.{holoInspection.header.minorVersion}</span>
+                      <span>sections: {holoInspection.header.sectionCount}</span>
+                      <span>manifestLen: {holoInspection.header.manifestByteLength}B</span>
+                      <span>footerNonZero: {String(holoInspection.header.footerNonZero)}</span>
+                    </div>
+                  )}
+                  {holoInspection.manifest && (
+                    <div
+                      className="p-2 rounded bg-black/30 font-mono text-[10px] space-y-0.5 break-all"
+                      data-testid="holo-manifest-summary"
+                    >
+                      <div>schema: {holoInspection.manifest.schema} · entrypoint: {holoInspection.manifest.entrypoint}</div>
+                      <div>project: {holoInspection.manifest.projectId} · rev: {holoInspection.manifest.sourceRevision}</div>
+                      <div>sections: {holoInspection.manifest.sections.join(', ')}</div>
+                    </div>
+                  )}
+                  <div className="font-mono text-[10px] opacity-90 break-all">
+                    sha256: {holoInspection.sha256Hex} · Core-Wasm magic: {String(holoInspection.hasCoreWasmMagic)} · HOLOVIEW magic: {String(holoInspection.hasHoloviewMagic)}
+                  </div>
+                </div>
+              )}
+            </div>
 
             <ArtifactDependencyDag artifact={activeArtifact} project={activeProject} />
 

@@ -11,6 +11,7 @@ import {
   WindmillJobRecord,
 } from '../types/foundry';
 import { WINDMILL_ENDPOINTS, WINDMILL_TARGET_CONFIG } from './windmillAdapter';
+import { validateFixedRegistryCommand } from './windmillCommandRegistry';
 
 /**
  * Layer 4: Windmill Execution Services Interface.
@@ -215,8 +216,27 @@ export class FailClosedLocalWindmillService implements WindmillExecutionService 
   }
 
   async submitAuthorizedWorkflow(
-    request: WindmillExecutionRequest
+    request: WindmillExecutionRequest & {
+      commandId?: string;
+      rawCommandString?: string;
+      projectRelativePath?: string;
+    }
   ): Promise<{ ok: true; job: WindmillJobIdentity } | { ok: false; diagnostic: WindmillConnectionDiagnostic }> {
+    if (request.rawCommandString || request.commandId) {
+      const cmdCheck = validateFixedRegistryCommand({
+        commandId: request.commandId,
+        rawCommandString: request.rawCommandString,
+        projectRelativePath: request.projectRelativePath ?? 'examples/Calculator',
+        sourceRevision: request.sourceRevision,
+      });
+      if (!cmdCheck.allowed) {
+        return {
+          ok: false,
+          diagnostic: this.reportConnectionFailure('SANDBOX_ISOLATED', cmdCheck.reason),
+        };
+      }
+    }
+
     if (this.submittedIdempotencyKeys.has(request.idempotencyKey)) {
       return {
         ok: false,
@@ -315,15 +335,15 @@ export function prepareRustWorkspaceModelContract(params: {
       projectId: params.projectId,
       workflowId: 'wf-uorust-modeling',
       flowPath: 'f/uor_foundry/uorust_model_workspace',
-      flowVersion: '2a2b674f-candidate',
+      flowVersion: '5868afe3-candidate',
       sourceRevision: safeRevision,
       operatorApproved: false,
       requestedAt,
     },
     preconditions: [
       'Validated LOCAL Windmill endpoint (uor-offline-foundry) with offline Cargo.lock isolation.',
-      'Pinned afflom/UORust route table (model/routes.toml) and non-defaulting span admission (UE-03, UE-06).',
-      'Separate LexLean & PrismPM independent verification suites required after projection.',
+      'Pinned afflom/UORust (5868afe3) route table (model/routes.toml) and non-defaulting span admission (UE-03, UE-06).',
+      'Separate LexLean & PrismPM independent verification suites required after projection (Cargo build is never verification).',
     ],
     failClosedNotice:
       `Browser preview refuses executing Cargo/build.rs directly (${params.declaredInputs || 'no Cargo path'}). Dispatch remains blocked until LOCAL Windmill is validated.`,

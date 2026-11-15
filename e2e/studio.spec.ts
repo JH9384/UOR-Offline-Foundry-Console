@@ -195,6 +195,18 @@ test.describe('UOR Offline Foundry Studio Workspace E2E', () => {
     await page.getByRole('button', { name: 'Stage Local Intent' }).click();
     await expect(page.getByRole('main').getByText(/Duplicate dispatch prevented/i)).toBeVisible();
 
+    // Check Build -> Artifacts tab direct download gating + Hologram v4 header/manifest parser
+    await page.getByRole('button', { name: /Artifacts & Provenance/i }).click();
+    await expect(page.getByTestId('direct-download-gate')).toBeVisible();
+    await expect(page.getByRole('button', { name: /\.holo Archive Binary/i })).toBeDisabled();
+    await page.getByRole('button', { name: /Test `PP3001` JSON Rejection/i }).click();
+    await expect(page.getByTestId('holo-inspection-result')).toContainText('REJECTED_JSON_AS_HOLO_PP3001');
+    await page.getByRole('button', { name: /Test Valid `HOLO\\x04\\0` Bytes/i }).click();
+    await expect(page.getByTestId('holo-inspection-result')).toContainText('VALID_HOLO_V4');
+    await expect(page.getByTestId('holo-manifest-summary')).toContainText('prismpm/holo-v4-manifest/1');
+    await page.getByRole('button', { name: /Test Corrupt Manifest Rejection/i }).click();
+    await expect(page.getByTestId('holo-inspection-result')).toContainText('INVALID_MANIFEST');
+
     // 11. Verify & Release blockers + contextual Source Review & Compliance
     await modesNav.getByRole('button', { name: 'Verify & Release' }).click();
     await expect(page.getByText('RELEASE BLOCKED').first()).toBeVisible();
@@ -202,6 +214,7 @@ test.describe('UOR Offline Foundry Studio Workspace E2E', () => {
     await page.getByRole('button', { name: /Source Review & Compliance/i }).click();
     await expect(page.getByTestId('source-compliance-panel')).toBeVisible();
     await expect(page.getByText('UOR Source Review & Compliance Register')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'All Sources (8)' })).toBeVisible();
     await expect(page.getByText(/e3be477fded263029479127363f7fb6a3597e7d4/).first()).toBeVisible();
     await page.getByRole('button', { name: /Release Governance/i }).click();
     await expect(page.getByRole('button', { name: /Authorize Production Release \(Blocked\)/i })).toBeDisabled();

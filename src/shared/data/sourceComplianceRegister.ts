@@ -106,8 +106,8 @@ export const REVIEWED_SOURCES_REGISTER: ReviewedSourceRecord[] = [
     name: 'Prism-DevRel (Product Generator & Source-Pinned Catalog)',
     owner: 'afflom',
     canonicalUrl: 'https://github.com/afflom/prism-devrel',
-    reviewedCommitSha: '5f2ebfcec2bb6816c5bec6e6a17bbfdb6bab76a5',
-    reviewedCommitDate: '2026-11-15T10:45:21Z',
+    reviewedCommitSha: '8af99e96f6bd9f5865721171e582d8df6ad53166',
+    reviewedCommitDate: '2026-11-15T18:10:00Z',
     relevantPaths: [
       'README.md',
       'CONFORMANCE.md',
@@ -280,8 +280,8 @@ export const REVIEWED_SOURCES_REGISTER: ReviewedSourceRecord[] = [
     name: 'UORust (Cargo Workspace -> Prism/LexLean Model Translator)',
     owner: 'afflom',
     canonicalUrl: 'https://github.com/afflom/UORust',
-    reviewedCommitSha: '2a2b674f15cd1d7bc638d4c52d0606ad135f3098',
-    reviewedCommitDate: '2026-11-15T13:38:48Z',
+    reviewedCommitSha: '5868afe38012d647be00ad948949b1e384b87211',
+    reviewedCommitDate: '2026-11-15T19:00:00Z',
     relevantPaths: [
       'README.md',
       'CONFORMANCE.md',
@@ -355,9 +355,226 @@ export const REVIEWED_SOURCES_REGISTER: ReviewedSourceRecord[] = [
       'Rust >= 1.89, Cargo offline lock, `lexlean`, `prismpm`, `just`. Unavailable in AI Studio browser preview.',
     ],
     openIssuesAndBlockers: [
-      'Live Windmill UORust workflow runnable (`f/uor_foundry/uorust_model_workspace`) is an unregistered proposal (`NOT CONNECTED`).',
-      'Independent LexLean & PrismPM verification of modeled Cargo targets remains strictly separated from console preview.',
+      'Live Windmill UORust workflow runnable (`f/uor_foundry/uorust_model_workspace`) requires local Mac Studio validation (`NOT CONNECTED`).',
+      'Independent LexLean & PrismPM verification of modeled Cargo targets remains strictly separated from console preview and cargo compilation.',
     ],
+    integrationStatus: 'CANDIDATE',
+  },
+  {
+    id: 'prismpm',
+    name: 'PrismPM (Closed-Model Orchestrator & .holo v4/v5 Packager)',
+    owner: 'UOR-Foundation',
+    canonicalUrl: 'https://github.com/UOR-Foundation/PrismPM',
+    reviewedCommitSha: 'b8bbabcf27392d65e58fe6e27612bdb785aa2939',
+    reviewedCommitDate: '2026-11-15T00:00:00Z',
+    relevantPaths: [
+      'README.md',
+      'RELEASE-STATUS.md',
+      'crates/prismpm/src/cli.rs',
+      'crates/prismpm/src/holo/archive.rs',
+      'crates/prismpm/src/holo/v5.rs',
+      'examples/Calculator/prismpm.toml',
+      'examples/Calculator/lexlean.toml',
+      'examples/Calculator/src/Calculator.lex.tex',
+      'tests/data/calculator-baseline.json',
+    ],
+    licenseSpdx: 'MIT OR Apache-2.0',
+    attributionNotice: 'Dual-licensed MIT / Apache-2.0 (UOR-Foundation/PrismPM).',
+    documentedCapabilities: [
+      'Compiles closed .lex.tex models and dependency locks (prismpm.lock, lexlean.lock, standards.lock) into model.prism.json, LCNF/named roots, Cargo crate, import-free Core-Wasm (hologram:guest/core-wasm@1, holo_run), HOLOVIEW\\0\\x01, and binary .holo archives.',
+      'Enforces physical archive validation rejecting JSON renamed as .holo (`PP3001`) and checking HOLO\\x04\\0 / UORC\\x02\\x01 headers and seals.',
+    ],
+    intendedUorUse:
+      'Authoritative orchestrator for LOCK -> CHECK -> BUILD -> VERIFY -> INSPECT -> EXPORT_RELEASE stages executed via fixed Windmill commands on Mac Studio.',
+    verificationMechanisms: [
+      '`prismpm lock --check`, `prismpm fetch --locked`, `prismpm check`, `prismpm build --locked`, `prismpm verify`, `prismpm inspect`.',
+      'Baseline calculator conformance suite (`tests/calculator_baseline.rs`, `tests/data/calculator-baseline.json`).',
+    ],
+    claimOrAcceptanceIds: ['PP1101', 'PP2011', 'PP3001', 'PP5401', 'PP6101', 'PP7401', 'OC-01..OC-07', 'DK-01..DK-06'],
+    claims: [
+      {
+        id: 'calculator-holo-codec',
+        state: 'tested',
+        statement: 'Closed Calculator model builds Core-Wasm guest, HOLOVIEW, and binary .holo archive in PrismPM tests.',
+        mechanism: '`crates/prismpm` unit & `calculator_baseline` integration suites.',
+      },
+      {
+        id: 'v0.4.0-ecosystem-acceptance',
+        state: 'blocked',
+        statement: 'v0.4.0 immutable installed-SDK dual-platform VV and PP2011 Browser profile acceptance.',
+        mechanism: 'PrismPM `RELEASE-STATUS.md` & issues #62, #63, #66, #67, #69.',
+        limitationOrBlocker: 'Open release acceptance obligations + closed PP2011 browser profile preserved fail-closed.',
+      },
+    ],
+    testEvidenceAndLimitations: [
+      'RELEASE-STATUS.md explicitly marks declaration-validation helpers as structural checks, never execution proof.',
+      'No Rust/Cargo/prismpm binary exists inside Google AI Studio preview.',
+    ],
+    securityAndQualityRequirements: [
+      'Mandatory `--locked --offline` after `fetch --locked`; refuse legacy JSON disguised as `.holo` (`PP3001`).',
+    ],
+    dependenciesAndOfflineAvailability: [
+      'Rust toolchain, Cargo offline cache, `lexlean`, `leanprover/lean4:v4.32.1`. Executed strictly via local Mac Studio Windmill.',
+    ],
+    openIssuesAndBlockers: [
+      'Dual-platform 15-gate VV closure and PP2011 browser profile acceptance remain open upstream.',
+    ],
+    integrationStatus: 'CANDIDATE',
+  },
+  {
+    id: 'lexlean',
+    name: 'LexLean (Controlled-Language Compiler & Lean 4.32.1 Verifier)',
+    owner: 'UOR-Foundation',
+    canonicalUrl: 'https://github.com/UOR-Foundation/LexLean',
+    reviewedCommitSha: '71defb4c663aaec5b9a3aab04cbc6a03e7106227',
+    reviewedCommitDate: '2026-10-27T00:00:00Z',
+    relevantPaths: [
+      'README.md',
+      'VERIFICATION.md',
+      'crates/lexlean-cli/',
+      'crates/lexlean-verify/',
+    ],
+    licenseSpdx: 'MIT OR Apache-2.0',
+    attributionNotice: 'Dual-licensed MIT / Apache-2.0 (UOR-Foundation/LexLean).',
+    documentedCapabilities: [
+      'Parses controlled `.lex.tex` specifications, generates `lexlean/semantic-module/1` JSON and Lean 4 modules.',
+      'Separates `lexlean check` (closure/grammar/typing) and `lexlean build` (Lean/LaTeX/source maps) from `lexlean verify` (`leanprover/lean4:v4.32.1`, `leanchecker`, `#print axioms` audit).',
+    ],
+    intendedUorUse:
+      'Execute CHECK, BUILD, and VERIFY stages separately via fixed Windmill commands; invalidate attestations automatically upon source revision changes.',
+    verificationMechanisms: [
+      '`lexlean verify` invoking `leanprover/lean4:v4.32.1` + `leanchecker` + `#print axioms` audit.',
+    ],
+    claimOrAcceptanceIds: ['LLV7005', 'lexlean/project/1', 'lexlean/lock/2', 'lexlean/production-result/1'],
+    claims: [
+      {
+        id: 'check-build-never-verify',
+        state: 'proved',
+        statement: 'Grammar/typing checks (`lexlean check`) and build emission (`lexlean build`) never certify theorem validity.',
+        mechanism: 'Architectural separation enforced by `lexlean verify` attestation hashing.',
+      },
+      {
+        id: 'local-leanchecker-replay',
+        state: 'blocked',
+        statement: 'Running `leanprover/lean4:v4.32.1` and `leanchecker` inside AI Studio browser sandbox.',
+        mechanism: 'Requires native Lean 4 toolchain on local Mac Studio.',
+        limitationOrBlocker: 'Lean 4 / leanchecker unavailable in browser preview.',
+      },
+    ],
+    testEvidenceAndLimitations: [
+      'Changing `.lex.tex` input source invalidates prior `lexlean/production-result/1` attestation.',
+    ],
+    securityAndQualityRequirements: [
+      'Reject undeclared axioms (`LLV7005`) and `sorry` placeholders; require `#print axioms` audit.',
+    ],
+    dependenciesAndOfflineAvailability: [
+      'Requires `ghcr.io/uor-foundation/lexlean:0.4.0` or native binary + `leanprover/lean4:v4.32.1`.',
+    ],
+    openIssuesAndBlockers: ['Requires local Mac Studio Windmill worker connection.'],
+    integrationStatus: 'CANDIDATE',
+  },
+  {
+    id: 'foundry',
+    name: 'UOR-Foundation/foundry (Forge Kernel & AI Foundry Specs)',
+    owner: 'UOR-Foundation',
+    canonicalUrl: 'https://github.com/UOR-Foundation/foundry',
+    reviewedCommitSha: '760eaac29687628c7c66e8d492e126afa194656e',
+    reviewedCommitDate: '2026-11-15T00:00:00Z',
+    relevantPaths: [
+      'openspec/specs/forge-kernel/spec.md',
+      'CONFORMANCE.md',
+      'VERIFICATION.md',
+      'studio/README.md',
+      'studio/PRISMPM_REV',
+      'studio/KERNEL_REV',
+      'studio/CHAT_CONTRACTS_LOCK.json',
+      'v2/ARCHITECTURE.md',
+    ],
+    licenseSpdx: 'MIT OR Apache-2.0',
+    attributionNotice: 'Dual-licensed MIT / Apache-2.0 (UOR-Foundation/foundry).',
+    documentedCapabilities: [
+      'Defines Forge Kernel state invariants (`INV-001`..`INV-004` / `REQ-001`..`REQ-004`) ensuring edits always invalidate prior checks/proofs and never mark unproved apps published.',
+      'Pins `studio/PRISMPM_REV`, `KERNEL_REV`, `CHAT_CONTRACTS_LOCK.json`, and Five LexLean studio modules (`Workspace`, `Inference`, `Object`, `Publish`, `Forge`).',
+    ],
+    intendedUorUse:
+      'Align console 10-stage workflow transitions, proof-invalidation rules on source edit, and BLAKE3/SHA-256 content addressing.',
+    verificationMechanisms: [
+      'Lean-proved invariants `inv001Holds`..`inv004Holds` on Forge Kernel rules.',
+    ],
+    claimOrAcceptanceIds: ['INV-001', 'INV-002', 'INV-003', 'INV-004', 'REQ-001..REQ-004', 'FK-01..FK-09'],
+    claims: [
+      {
+        id: 'INV-003-edit-invalidates-proof',
+        state: 'proved',
+        statement: 'Any source/rule edit resets phase back so a proof never outlives the rules it verified (`inv003Holds`).',
+        mechanism: 'Lean kernel theorem in `forge-kernel` specification.',
+      },
+      {
+        id: 'foundry-v2-architecture',
+        state: 'untested',
+        statement: 'Browser-tab semantic interpreter & service worker preview parity.',
+        mechanism: 'v2/ARCHITECTURE.md (explicitly marked "Status: draft for approval. Nothing is built").',
+        limitationOrBlocker: 'Draft architecture only; must never be reported as built or verified.',
+      },
+    ],
+    testEvidenceAndLimitations: [
+      'Compiled kernel `.holo` in `studio/KERNEL_REV` requires local Hologram/PrismPM runtime.',
+    ],
+    securityAndQualityRequirements: [
+      'Never mark an edited or unproved app published; admit network/effect origins strictly via explicit grants.',
+    ],
+    dependenciesAndOfflineAvailability: [
+      'Reference specs available statically; kernel binary execution requires local Mac Studio.',
+    ],
+    openIssuesAndBlockers: ['Live Forge Kernel runner path remains local to Mac Studio (`NOT CONNECTED`).'],
+    integrationStatus: 'REFERENCE ONLY',
+  },
+  {
+    id: 'hologram-live',
+    name: 'Hologram Live (Import-Free Core-Wasm Runtime & CLI)',
+    owner: 'Hologram-Technologies',
+    canonicalUrl: 'https://github.com/Hologram-Technologies/hologram-live',
+    reviewedCommitSha: 'cbbf97b5b8199f5865721171e582d8df6ad53166',
+    reviewedCommitDate: '2026-10-01T00:00:00Z',
+    relevantPaths: [
+      'README.md',
+      'src/main.rs',
+    ],
+    licenseSpdx: 'MIT OR Apache-2.0',
+    attributionNotice: 'MIT / Apache-2.0 (Hologram-Technologies/hologram-live).',
+    documentedCapabilities: [
+      'Provides CLI `--json` contracts for `inspect`, `verify`, payload-free `plan`, import-free sandboxed `run` (fuel/memory/deadline ceilings), and `pack`.',
+      'Enforces directory validation and re-hashing of `.holo` v4 containers before execution.',
+    ],
+    intendedUorUse:
+      'Power INSPECT, PREVIEW runtime acceptance, and fixed-registry `hologram inspect|verify|plan|run --json` execution on Mac Studio.',
+    verificationMechanisms: [
+      '`hologram inspect --json`, `hologram verify --json`, `hologram run --json`.',
+    ],
+    claimOrAcceptanceIds: ['holo_run:(i32,i32)->i64', 'hologram:guest/core-wasm@1'],
+    claims: [
+      {
+        id: 'import-free-wasm-sandbox',
+        state: 'built',
+        statement: 'Import-free guest sandbox with fuel, memory, and deadline bounds.',
+        mechanism: 'Wasmtime host isolation in `hologram-live`.',
+      },
+      {
+        id: 'local-hologram-runtime-execution',
+        state: 'blocked',
+        statement: 'Executing `.holo` Core-Wasm payloads inside AI Studio browser.',
+        mechanism: 'Requires `hologram` CLI binary on Mac Studio.',
+        limitationOrBlocker: 'Browser preview cannot execute native `hologram run` binary.',
+      },
+    ],
+    testEvidenceAndLimitations: ['Hologram CLI is absent from cloud preview container.'],
+    securityAndQualityRequirements: [
+      'Import-free Core-Wasm (`hologram:guest/core-wasm@1`), payload-free planning, and strict re-hash verification.',
+    ],
+    dependenciesAndOfflineAvailability: [
+      'Rust/Wasmtime runtime built offline on Mac Studio.',
+    ],
+    openIssuesAndBlockers: ['Live `hologram` worker runner NOT CONNECTED.'],
     integrationStatus: 'CANDIDATE',
   },
 ];

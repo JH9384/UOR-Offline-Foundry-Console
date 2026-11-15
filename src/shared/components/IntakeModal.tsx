@@ -9,6 +9,7 @@ import {
 import {
   EngineeringComponentId,
   EngineeringIntakePayload,
+  PrismInputMode,
   ProductFamily,
   ProjectTemplateSpec,
 } from '../types/foundry';
@@ -22,14 +23,16 @@ interface IntakeModalProps {
 
 const DEFAULT_PAYLOAD: EngineeringIntakePayload = {
   projectName: '',
+  inputMode: 'NATIVE_PRISM',
   productFamily: 'application',
   componentId: 'prismpm-calculator',
   workflowId: 'wf-prismpm-delivery',
   purpose: '',
-  declaredInputs: 'src/Main.lex.tex, lexlean.lock',
+  declaredInputs: 'src/Main.lex.tex, prismpm.lock, lexlean.lock, standards.lock',
   environmentDeclaration: 'Sanitized offline workspace (no local secrets or raw logs)',
-  sourceRevision: 'demo/intake@0.4.0',
+  sourceRevision: 'prismpm/demo@b8bbabcf',
   acknowledgeBoundary: false,
+  lockfilesDeclared: ['prismpm.lock', 'lexlean.lock', 'standards.lock'],
 };
 
 export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmit }) => {
@@ -52,10 +55,46 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
     }));
   };
 
+  const handleInputModeChange = (mode: PrismInputMode) => {
+    setForm((prev) => ({
+      ...prev,
+      inputMode: mode,
+      componentId:
+        mode === 'EXISTING_RUST'
+          ? 'uorust-translator'
+          : mode === 'GUIDED_PRODUCT'
+            ? 'prismpm-calculator'
+            : prev.componentId === 'uorust-translator'
+              ? 'prismpm-calculator'
+              : prev.componentId,
+      workflowId:
+        mode === 'EXISTING_RUST'
+          ? 'wf-uorust-modeling'
+          : 'wf-prismpm-delivery',
+      declaredInputs:
+        mode === 'EXISTING_RUST'
+          ? 'Cargo.toml, Cargo.lock, model/routes.toml, prismpm.lock, lexlean.lock'
+          : mode === 'GUIDED_PRODUCT'
+            ? 'devrel/subjects.json, app/src/Catalog.lex.tex, prismpm.lock, lexlean.lock, standards.lock'
+            : 'examples/Calculator/prismpm.toml, examples/Calculator/src/Calculator.lex.tex, prismpm.lock, lexlean.lock, standards.lock',
+      lockfilesDeclared:
+        mode === 'EXISTING_RUST'
+          ? ['Cargo.lock', 'prismpm.lock', 'lexlean.lock']
+          : ['prismpm.lock', 'lexlean.lock', 'standards.lock'],
+    }));
+  };
+
   const applyTemplate = (tpl: ProjectTemplateSpec) => {
     setSelectedTemplateId(tpl.id);
+    const mode: PrismInputMode =
+      tpl.id === 'rust-workspace-model'
+        ? 'EXISTING_RUST'
+        : tpl.id === 'prism-product'
+          ? 'GUIDED_PRODUCT'
+          : 'NATIVE_PRISM';
     setForm({
       projectName: `${tpl.defaultNamePrefix} ${Math.floor(10 + Math.random() * 89)}`,
+      inputMode: mode,
       productFamily: tpl.productFamily,
       componentId: tpl.componentId,
       workflowId: tpl.workflowId,
@@ -66,6 +105,11 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
       acknowledgeBoundary: true,
       sourceRefs: tpl.sourceRefs,
       templateOriginId: tpl.id,
+      lockfilesDeclared:
+        mode === 'EXISTING_RUST'
+          ? ['Cargo.lock', 'prismpm.lock', 'lexlean.lock']
+          : ['prismpm.lock', 'lexlean.lock', 'standards.lock'],
+      guidedPrompt: mode === 'GUIDED_PRODUCT' ? tpl.purpose : undefined,
     });
     setErrors({});
   };
@@ -76,19 +120,21 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
     setSelectedTemplateId(sampleTpl.id);
     setForm({
       projectName: 'PrismPM Calculator Qualification Demo',
+      inputMode: 'NATIVE_PRISM',
       productFamily: sampleTpl.productFamily,
       componentId: sampleTpl.componentId,
       workflowId: sampleTpl.workflowId,
       purpose:
         'Simulate closed .lex.tex build and fail-closed verification gates for Calculator reference model.',
       declaredInputs:
-        'examples/Calculator/src/Calculator.lex.tex, examples/Calculator/lexlean.lock',
+        'examples/Calculator/prismpm.toml, examples/Calculator/src/Calculator.lex.tex, examples/Calculator/lexlean.lock',
       environmentDeclaration:
         'Sanitized browser demonstration; target Windmill workspace uor-offline-foundry',
-      sourceRevision: 'prismpm/demo@ee207ff1',
+      sourceRevision: 'prismpm/demo@b8bbabcf',
       acknowledgeBoundary: true,
       sourceRefs: sampleTpl.sourceRefs,
       templateOriginId: sampleTpl.id,
+      lockfilesDeclared: ['prismpm.lock', 'lexlean.lock', 'standards.lock'],
     });
     setErrors({});
   };
@@ -149,6 +195,52 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
         </div>
 
         <form onSubmit={handleFormSubmit} className="p-6 overflow-y-auto space-y-4">
+          {/* Three Authoritative Prism Input Modes */}
+          <div className="space-y-2">
+            <div className="text-xs font-medium text-slate-300">
+              Prism Input Mode *
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              {(
+                [
+                  {
+                    id: 'NATIVE_PRISM',
+                    title: 'Native Prism (.lex.tex)',
+                    note: 'Closed PrismPM / LexLean specification & acceptance vectors',
+                  },
+                  {
+                    id: 'EXISTING_RUST',
+                    title: 'Existing Rust (UORust)',
+                    note: 'Cargo workspace AST route projection + separate Cargo evidence',
+                  },
+                  {
+                    id: 'GUIDED_PRODUCT',
+                    title: 'Guided Product (DevRel)',
+                    note: 'Facet template draft requiring explicit human spec review',
+                  },
+                ] as const
+              ).map((mode) => {
+                const active = (form.inputMode ?? 'NATIVE_PRISM') === mode.id;
+                return (
+                  <button
+                    key={mode.id}
+                    type="button"
+                    onClick={() => handleInputModeChange(mode.id)}
+                    data-testid={`input-mode-${mode.id}`}
+                    className={`p-2.5 text-left rounded-md border transition-colors ${
+                      active
+                        ? 'bg-emerald-950/25 border-emerald-500/50 text-slate-100'
+                        : 'bg-[#0B0F17] border-slate-800 hover:border-slate-700 text-slate-300'
+                    }`}
+                  >
+                    <div className="text-xs font-medium text-slate-100">{mode.title}</div>
+                    <div className="text-[11px] text-slate-400 mt-0.5 leading-snug">{mode.note}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           {/* Synthetic UOR-grounded Templates */}
           <div className="space-y-2">
             <div className="text-xs font-medium text-slate-300">
@@ -291,6 +383,28 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
             />
             {errors.purpose && <p className="mt-1 text-xs text-rose-400">{errors.purpose}</p>}
           </div>
+
+          {form.inputMode === 'GUIDED_PRODUCT' && (
+            <div className="p-3 bg-[#0B0F17] border border-blue-500/30 rounded-md space-y-2">
+              <label className="block text-xs font-medium text-blue-200" htmlFor="intake-guided-prompt">
+                Guided Product Prompt (Prism-DevRel 7-Facet Draft Spec)
+              </label>
+              <textarea
+                id="intake-guided-prompt"
+                rows={2}
+                value={form.guidedPrompt ?? ''}
+                onChange={(e) => setForm({ ...form, guidedPrompt: e.target.value })}
+                placeholder="Describe target facets and views; draft .lex.tex requires explicit human approval before PrismPM compilation."
+                className="w-full px-3 py-2 text-xs bg-[#111827] border border-slate-700 rounded-md text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+              />
+            </div>
+          )}
+
+          {form.inputMode === 'EXISTING_RUST' && (
+            <div className="p-3 bg-[#0B0F17] border border-amber-500/30 rounded-md text-xs text-amber-200">
+              Existing Rust mode uses <span className="font-mono">UORust</span> route projection (`Cargo.lock`, `model/routes.toml`). Browser Cargo execution is blocked and Cargo compilation never substitutes for Prism application verification.
+            </div>
+          )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>

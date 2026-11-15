@@ -238,6 +238,16 @@ export class VerificationAuthorityService {
       );
     }
 
+    const archiveValidationFailed =
+      primaryArtifact?.archiveValidationStatus === 'REJECTED_JSON_AS_HOLO_PP3001' ||
+      primaryArtifact?.archiveValidationStatus === 'INVALID_MAGIC_OR_FOOTER';
+
+    if (archiveValidationFailed) {
+      blockingReasons.push(
+        `Target archive failed Hologram header/manifest validation (${primaryArtifact.archiveValidationStatus}).`
+      );
+    }
+
     const matchedEvidenceIds: string[] = [];
     const missingRequirements: AuthorityEvaluationSummary['missingRequirements'] = [];
     const missingAuthoritySet = new Set<VerificationSuiteAuthority>();
@@ -300,6 +310,7 @@ export class VerificationAuthorityService {
 
     const overallVerified =
       artifactDigestValid &&
+      !archiveValidationFailed &&
       missingRequirements.length === 0 &&
       matchedEvidenceIds.length === policy.requiredSuites.length;
 
@@ -396,6 +407,80 @@ export class VerificationAuthorityService {
       blockingReasons,
       digestMatched: artifactDigestValid && missingRequirements.length === 0,
       targetArtifactDigest: targetDigest,
+    };
+  }
+
+  /**
+   * Forge Kernel INV-003 / LexLean proof-invalidation boundary:
+   * Any change to a project's authoritative source revision or model hash must immediately
+   * mark previously matching PASS/AUTHENTICATED suites and release approvals as STALE / BLOCKED
+   * so historical verification can never certify the new source.
+   */
+  invalidateStaleEvidenceOnSourceChange(params: {
+    project: ProjectRecord;
+    newSourceRevision: string;
+    verifications: VerificationSuiteRecord[];
+    approvals: ApprovalDecisionRecord[];
+  }): {
+    updatedProject: ProjectRecord;
+    updatedVerifications: VerificationSuiteRecord[];
+    updatedApprovals: ApprovalDecisionRecord[];
+    invalidatedSuiteIds: string[];
+  } {
+    const now = new Date().toISOString();
+    const trimmedRev = params.newSourceRevision.trim();
+    if (!trimmedRev || trimmedRev === params.project.sourceRevision) {
+      return {
+        updatedProject: params.project,
+        updatedVerifications: params.verifications,
+        updatedApprovals: params.approvals,
+        invalidatedSuiteIds: [],
+      };
+    }
+
+    const invalidatedSuiteIds: string[] = [];
+    const updatedVerifications = params.verifications.map((suite) => {
+      if (suite.projectId !== params.project.id) return suite;
+      invalidatedSuiteIds.push(suite.id);
+      return {
+        ...suite,
+        status: 'NOT VERIFIED' as const,
+        authenticationStatus: 'STALE' as const,
+        blockingForRelease: true,
+        executionRecord: `Invalidated by source revision update (${params.project.sourceRevision} -> ${trimmedRev}). Fresh LexLean/PrismPM verify required.`,
+      };
+    });
+
+    const updatedApprovals = params.approvals.map((apr) => {
+      if (apr.projectId !== params.project.id) return apr;
+      if (apr.gate === 'RELEASE_AUTHORIZATION') {
+        return {
+          ...apr,
+          disposition: 'BLOCKED' as const,
+          rationale: `Auto-blocked on source revision change (${params.project.sourceRevision} -> ${trimmedRev}); stale evidence cannot authorize release.`,
+        };
+      }
+      return apr;
+    });
+
+    const updatedProject: ProjectRecord = {
+      ...params.project,
+      sourceRevision: trimmedRev,
+      lifecycleStatus: 'RELEASE BLOCKED',
+      updatedAt: now,
+      releaseBlockedReasons: [
+        `Source revision changed to "${trimmedRev}" — previous proofs and artifacts invalidated per INV-003.`,
+        ...params.project.releaseBlockedReasons.filter(
+          (r) => !r.startsWith('Source revision changed to')
+        ),
+      ],
+    };
+
+    return {
+      updatedProject,
+      updatedVerifications,
+      updatedApprovals,
+      invalidatedSuiteIds,
     };
   }
 }

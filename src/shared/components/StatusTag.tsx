@@ -16,6 +16,7 @@ import {
   ConnectionStatus,
   DraftProposalStatus,
   EpistemicCondition,
+  HoloArchiveValidationStatus,
   IntegrationMode,
   ProjectLifecycleStatus,
   StageRunStatus,
@@ -31,10 +32,13 @@ type StatusValue =
   | ProjectLifecycleStatus
   | ApprovalDisposition
   | ArtifactLifecycleBadge
+  | HoloArchiveValidationStatus
   | IntegrationMode
   | ArtifactPreviewStatus
   | WindmillJobState
   | DraftProposalStatus
+  | 'CANDIDATE'
+  | 'STALE'
   | 'QUEUED'
   | 'SIMULATED'
   | 'BLOCKED';
@@ -60,6 +64,8 @@ export const StatusTag: React.FC<StatusTagProps> = ({ value, className = '' }) =
     case 'APPROVED':
     case 'LOCAL':
     case 'ONLINE':
+    case 'VALID_HOLO_V4':
+    case 'VALID_HOLO_V5_UORC':
       colorClasses =
         value === 'DOCUMENTED' || value === 'LOCAL'
           ? 'border-sky-500/30 bg-sky-950/40 text-sky-300'
@@ -70,8 +76,15 @@ export const StatusTag: React.FC<StatusTagProps> = ({ value, className = '' }) =
     case 'FAILED':
     case 'REJECTED':
     case 'CANCELLED':
+    case 'REJECTED_JSON_AS_HOLO_PP3001':
+    case 'INVALID_MAGIC_OR_FOOTER':
+    case 'STALE':
       colorClasses = 'border-rose-500/40 bg-rose-950/45 text-rose-300';
       Icon = XCircle;
+      break;
+    case 'CANDIDATE':
+      colorClasses = 'border-sky-500/30 bg-sky-950/40 text-sky-300';
+      Icon = Clock;
       break;
     case 'NOT VERIFIED':
     case 'UNVERIFIED':

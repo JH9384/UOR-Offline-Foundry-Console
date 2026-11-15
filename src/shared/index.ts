@@ -10,3 +10,5 @@ export { verificationAuthorityService } from './services/verificationAuthoritySe
 export { sourceComplianceService } from './services/sourceComplianceService';
 export { foundrySyncService, sanitizeExportBundle, AIR_GAPPED_EXPORT_ALLOWLIST_SCHEMA } from './services/syncService';
 export { durableLocalStore, DURABLE_EXPORT_ALLOWLIST_SCHEMA } from './services/durableLocalStore';
+export { artifactsService, ArtifactsService } from './services/artifactsService';
+export { hologramService, parseHologramV4Header, buildHologramV4Buffer } from './services/hologramService';

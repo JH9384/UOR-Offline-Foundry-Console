@@ -79,7 +79,9 @@ function validate() {
     'backend/local_ai_advisory.ts',
     'backend/intake_validate.ts',
     'backend/workflow_dispatch.ts',
+    'backend/prism_stage_dispatch.ts',
     'backend/job_status.ts',
+    'flows/prism_hologram_delivery.flow.json',
   ];
 
   for (const rel of requiredFiles) {

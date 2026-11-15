@@ -10,6 +10,10 @@ import {
   SkipForward,
 } from 'lucide-react';
 import {
+  FIXED_WINDMILL_COMMAND_REGISTRY,
+} from '../../adapters/windmillCommandRegistry';
+import { evaluateProjectOfflineClosure } from '../../services/holoArchiveValidator';
+import {
   ArtifactProvenanceRecord,
   DurableOperation,
   IntegrationMode,
@@ -203,11 +207,11 @@ export const BuildModePanel: React.FC<BuildModePanelProps> = ({
             </div>
           ) : (
             <>
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
                 {activeRun.stages.map((stage, idx) => (
                   <div
                     key={stage.stageId}
-                    className={`p-4 rounded-md border flex flex-col justify-between gap-3 ${
+                    className={`p-3.5 rounded-md border flex flex-col justify-between gap-2.5 ${
                       stage.status === 'RUNNING'
                         ? 'bg-blue-950/20 border-blue-500/40'
                         : stage.status === 'BLOCKED'
@@ -215,24 +219,84 @@ export const BuildModePanel: React.FC<BuildModePanelProps> = ({
                           : 'bg-[#0B0F17] border-slate-800'
                     }`}
                   >
-                    <div className="space-y-2">
+                    <div className="space-y-1.5">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="font-mono text-xs text-slate-400 tabular-nums">
-                          0{idx + 1}. {stage.label}
+                        <span className="font-mono text-xs text-slate-300 tabular-nums">
+                          {String(idx + 1).padStart(2, '0')}. {stage.label}
                         </span>
                         <StatusTag value={stage.status} />
                       </div>
                       <div className="text-[11px] font-mono text-slate-500">
-                        Gate: {stage.uorGate}
+                        {stage.stageContractName ?? stage.stageId.toUpperCase()} · {stage.uorGate}
                       </div>
                       <p className="text-xs text-slate-300 leading-relaxed">{stage.summary}</p>
+                      {stage.executionId && (
+                        <div className="text-[10px] font-mono text-slate-500 truncate">
+                          exec:{stage.executionId}
+                        </div>
+                      )}
                     </div>
-                    <div className="pt-2 border-t border-slate-800/80 text-[11px] font-mono text-slate-500 truncate">
-                      {stage.commandOrContract ?? stage.executedBy}
+                    <div className="pt-2 border-t border-slate-800/80 space-y-1 text-[10px] font-mono text-slate-500">
+                      <div className="truncate">{stage.commandOrContract ?? stage.executedBy}</div>
+                      {stage.toolchainIdentity && (
+                        <div className="truncate text-slate-400">{stage.toolchainIdentity}</div>
+                      )}
                     </div>
                   </div>
                 ))}
               </div>
+
+              {/* Offline Lockfile Closure + Fixed Windmill Command Registry */}
+              {(() => {
+                const lockReport = evaluateProjectOfflineClosure(
+                  project.inputMode ?? 'NATIVE_PRISM',
+                  project.lockfilesDeclared ?? []
+                );
+                const registryCount = FIXED_WINDMILL_COMMAND_REGISTRY.length;
+                return (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 text-xs">
+                    <div className="p-3.5 bg-[#0B0F17] border border-slate-800 rounded-md space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium text-slate-200">
+                          Offline Dependency Closure ({project.inputMode ?? 'NATIVE_PRISM'})
+                        </span>
+                        <StatusTag value={lockReport.readyForOfflineRun ? 'CANDIDATE' : 'BLOCKED'} />
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {lockReport.checks.map((chk) => (
+                          <span
+                            key={chk.filename}
+                            className={`px-2 py-0.5 text-[11px] font-mono rounded border ${
+                              chk.present
+                                ? 'border-emerald-500/35 bg-emerald-950/25 text-emerald-300'
+                                : 'border-amber-500/35 bg-amber-950/25 text-amber-300'
+                            }`}
+                          >
+                            {chk.filename}: {chk.present ? 'PINNED' : 'MISSING'}
+                          </span>
+                        ))}
+                      </div>
+                      {lockReport.blockingReasons.length > 0 && (
+                        <p className="text-[11px] text-amber-300">{lockReport.blockingReasons[0]}</p>
+                      )}
+                    </div>
+
+                    <div className="p-3.5 bg-[#0B0F17] border border-slate-800 rounded-md space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium text-slate-200">
+                          Fixed Windmill Command Registry &amp; `.holo` v4 Parser
+                        </span>
+                        <span className="text-[11px] font-mono text-slate-400">
+                          {registryCount} subcommands · {projectArtifacts[0]?.archiveValidationStatus ?? 'UNINSPECTED'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400">
+                        Only pinned CLI IDs (`prismpm`, `lexlean`, `hologram`, `uorust`, `cargo`) are dispatched. Build verification enforces `HOLO\x04\0` header, `"MFST"` manifest, 32-byte trailer, and `PP3001` JSON rejection via `ArtifactsService`.
+                      </p>
+                    </div>
+                  </div>
+                );
+              })()}
 
               <div className="p-3.5 bg-[#0B0F17] border border-amber-500/30 rounded-md flex items-start gap-2.5 text-xs text-slate-300">
                 <Lock className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" aria-hidden="true" />

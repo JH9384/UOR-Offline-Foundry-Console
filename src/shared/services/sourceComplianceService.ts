@@ -27,6 +27,8 @@ function inferProjectSourcePins(project: ProjectRecord): ProjectSourcePin[] {
     return [
       pin('uorust', 'Primary Cargo workspace -> Prism/LexLean translation contract'),
       pin('prism-devrel', 'Model projection catalog & R1-R6 conformance template rules'),
+      pin('prismpm', 'Closed-model check/build/verify orchestrator & .holo packager'),
+      pin('lexlean', 'Controlled-language Lean 4.32.1 kernel verification'),
       pin('stitch', 'Full SHA-256 artifact commitment & deterministic checkpoint checks'),
     ];
   }
@@ -38,12 +40,18 @@ function inferProjectSourcePins(project: ProjectRecord): ProjectSourcePin[] {
   ) {
     return [
       pin('rule30', 'Claim frontier, constructivity axiom audit & open-claim separation'),
+      pin('lexlean', 'Lean 4.32.1 kernel replay & #print axioms verifier'),
+      pin('foundry', 'Forge Kernel INV-001..INV-004 proof-invalidation invariants'),
       pin('stitch', 'SHA-256 artifact commitment & deterministic pure-state replay bounds'),
     ];
   }
 
   return [
+    pin('prismpm', 'Closed .lex.tex -> Core-Wasm, HOLOVIEW & binary .holo archive pipeline'),
+    pin('lexlean', 'Lean 4.32.1 leanchecker proof & production export verifier'),
+    pin('hologram-live', 'Import-free Core-Wasm inspect/verify/plan/run acceptance host'),
     pin('prism-devrel', 'Facet coverage, Diataxis documentation & template contract rules'),
+    pin('foundry', 'Forge Kernel state & capability gate specifications'),
     pin('stitch', 'Content-addressed SHA-256 commitments & deterministic recovery bounds'),
   ];
 }

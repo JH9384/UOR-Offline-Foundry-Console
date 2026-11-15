@@ -579,11 +579,26 @@ export const LivePreviewPanel: React.FC<LivePreviewPanelProps> = ({
                     </span>
                   </div>
                 ) : (
-                  <div className="p-3 bg-[#090D14] border border-slate-800 rounded text-xs space-y-1">
+                  <div className="p-3 bg-[#090D14] border border-slate-800 rounded text-xs space-y-1.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-mono text-[11px] text-sky-300">
+                        Input Mode: {project.inputMode ?? 'NATIVE_PRISM'}
+                      </span>
+                      {project.guidedProductDraft && (
+                        <span className="font-mono text-[11px] text-amber-300">
+                          Human Spec Review: {project.guidedProductDraft.humanReviewStatus}
+                        </span>
+                      )}
+                    </div>
                     <div className="text-slate-400">Purpose: {project.purpose}</div>
                     <div className="font-mono text-[11px] text-slate-500">
                       Inputs: {project.declaredInputs}
                     </div>
+                    {project.uorustRefusals && project.uorustRefusals.length > 0 && (
+                      <div className="p-2 bg-rose-950/25 border border-rose-500/35 rounded text-[11px] text-rose-200 font-mono">
+                        {project.uorustRefusals[0].code}: {project.uorustRefusals[0].message}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -732,8 +747,8 @@ export const LivePreviewPanel: React.FC<LivePreviewPanelProps> = ({
               ) : artifactPreview.kind === 'image-diagram' && artifactPreview.diagramNodes ? (
                 <div className="bg-[#090D14] border border-slate-800 rounded p-4 overflow-x-auto">
                   <svg
-                    viewBox="0 0 680 120"
-                    className="w-full min-w-[540px] h-28"
+                    viewBox={`0 0 ${Math.max(680, 24 + artifactPreview.diagramNodes.length * 84)} 120`}
+                    className="w-full min-w-[680px] h-28"
                     role="img"
                     aria-label="Workflow stage schematic diagram"
                   >

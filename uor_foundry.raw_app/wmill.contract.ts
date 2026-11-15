@@ -50,6 +50,15 @@ export interface GeneratedWmillBindingsContract {
       idempotencyKey: string;
       operatorApproved: boolean;
     }) => Promise<string>;
+    prism_stage_dispatch: (args: {
+      commandId: string;
+      stageId?: string;
+      projectId?: string;
+      sourceRevision: string;
+      projectRelativePath: string;
+      idempotencyKey: string;
+      operatorApproved: boolean;
+    }) => Promise<string>;
     job_status: (args: { jobId: string }) => Promise<string>;
   };
   getJob: (jobId: string) => Promise<WindmillJobSnapshot>;

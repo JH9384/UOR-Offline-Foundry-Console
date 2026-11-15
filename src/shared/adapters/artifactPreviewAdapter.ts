@@ -106,11 +106,26 @@ export class FoundryArtifactPreviewAdapter implements ArtifactPreviewAdapter {
         sourceRevision: project.sourceRevision,
         contentText: [
           `# ${project.name}`,
+          `Input Mode     : ${project.inputMode ?? 'NATIVE_PRISM'}`,
           `Product Family : ${project.productFamily}`,
           `Component      : ${component?.name ?? project.componentId}`,
           `Repository     : ${component?.repositoryName ?? 'Unverified'}`,
           `Source Revision: ${project.sourceRevision}`,
           `Lifecycle      : ${project.lifecycleStatus}`,
+          ...(project.lockfilesDeclared?.length
+            ? [`Declared Locks : ${project.lockfilesDeclared.join(', ')}`]
+            : []),
+          ...(project.guidedProductDraft
+            ? [
+                `Draft Review   : ${project.guidedProductDraft.humanReviewStatus}`,
+                `Facet Coverage : ${project.guidedProductDraft.facetCoverage.filter((f) => f.covered).length}/7`,
+              ]
+            : []),
+          ...(project.uorustRefusals?.length
+            ? [
+                `UORust Refusals: ${project.uorustRefusals.map((r) => `${r.code} (${r.span ?? 'global'})`).join('; ')}`,
+              ]
+            : []),
           ``,
           `## Declared Purpose`,
           project.purpose,
@@ -145,11 +160,18 @@ export class FoundryArtifactPreviewAdapter implements ArtifactPreviewAdapter {
         jsonPayload: primaryArtifact
           ? {
               schema: 'uor.foundry.artifact-preview.v1',
+              inputMode: project.inputMode ?? 'NATIVE_PRISM',
               artifactId: primaryArtifact.id,
               artifactName: primaryArtifact.artifactName,
               artifactFormat: primaryArtifact.artifactFormat,
+              outputClass: primaryArtifact.outputClass,
               digestMode: primaryArtifact.digestMode,
               sha256Digest: primaryArtifact.sha256Digest,
+              fileExistsOnDisk: Boolean(primaryArtifact.fileExistsOnDisk),
+              sha256Verified: Boolean(primaryArtifact.sha256Verified),
+              archiveValidationStatus: primaryArtifact.archiveValidationStatus ?? 'UNINSPECTED',
+              coreWasmContract: primaryArtifact.coreWasmContract,
+              viewProfile: primaryArtifact.viewProfile,
               sourceRevision: primaryArtifact.sourceRevision,
               toolchainIdentity: primaryArtifact.toolchainIdentity,
               inputDependencies: primaryArtifact.inputDependencies,
@@ -179,7 +201,7 @@ export class FoundryArtifactPreviewAdapter implements ArtifactPreviewAdapter {
           ? run.stages
               .map(
                 (s, idx) =>
-                  `[0${idx + 1} ${s.label.padEnd(8)} | Gate: ${s.uorGate.padEnd(14)} | ${s.status}]\n  ${s.summary}`
+                  `[${String(idx + 1).padStart(2, '0')} ${s.label.padEnd(16)} | Gate: ${s.uorGate.padEnd(14)} | ${s.status}]\n  ${s.summary}`
               )
               .join('\n\n')
           : undefined,
