@@ -16,6 +16,7 @@
     "test:e2e": "playwright test",
     "windmill:prepare": "node scripts/prepare-windmill-app.mjs",
     "windmill:validate": "node scripts/prepare-windmill-app.mjs --verify",
+    "windmill:test": "node scripts/windmill-local-test.mjs",
     "check": "npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {

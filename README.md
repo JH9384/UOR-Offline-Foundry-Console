@@ -16,6 +16,7 @@ npm run dev               # Start local Vite dev server (port 3000)
 npm run windmill:prepare  # Sync shared library (src/shared/) into uor_foundry.raw_app/shared/
 npm run typecheck         # Run TypeScript check across root workspace (independent of generated raw_app)
 npm run windmill:validate # Validate Windmill raw_app dependency closure & standalone tsconfig
+WINDMILL_TOKEN="<token>" npm run windmill:test # Run local read-only Windmill acceptance suite against http://127.0.0.1:8080 (uor-offline-foundry)
 npm run test:security     # Run Vitest + tsx security predicates & release gate regression suite
 npm run test:unit         # Run Vitest + React Testing Library project state transition & UI tests
 npm run test              # Run security, unit, and offline reliability test suites
@@ -24,7 +25,7 @@ npm run test:e2e          # Run headless Playwright Studio browser E2E suite
 npm run check             # Execute typecheck + test + build
 ```
 
-GitHub Actions CI (`.github/workflows/ci.yml`) runs root `typecheck` independently first (proving zero dependency on staged Windmill files), then executes `windmill:prepare`, `windmill:validate`, `test:security`, `test:unit`, `test`, `build`, installs Playwright Chromium + OS deps, and executes `test:e2e`.
+GitHub Actions CI (`.github/workflows/ci.yml`) runs root `typecheck` independently first (proving zero dependency on staged Windmill files), then executes `windmill:prepare`, `windmill:validate`, `test:security`, `test:unit`, `test`, `build`, installs Playwright Chromium + OS deps, and executes `test:e2e`. (`npm run windmill:test` connects to a local Windmill instance at `http://127.0.0.1:8080` and is invoked explicitly on the local host, not in cloud CI.)
 
 ---
 

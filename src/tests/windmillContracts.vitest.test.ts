@@ -1197,5 +1197,194 @@ describe('Phase A/B/C: Local Windmill Execution Client, Source-Package Handoff &
       else process.env.WM_JOB_ID = prevJobId;
     }
   });
+
+  it('10. exercises the local Windmill acceptance test runner (windmill:test) offline with credential redaction, loopback enforcement, and all 7 positive/negative read-only checks', async () => {
+    const repoRoot = process.cwd();
+    const runnerUrl = pathToFileURL(
+      path.join(repoRoot, 'scripts/windmill-local-test.mjs')
+    ).href;
+    const runnerMod = (await import(/* @vite-ignore */ runnerUrl)) as {
+      DEFAULT_WINDMILL_BASE_URL: string;
+      TARGET_WINDMILL_WORKSPACE: string;
+      redactToken: (text: string, token: string) => string;
+      validateLocalBaseUrl: (baseUrl: string) => string;
+      runLocalWindmillAcceptanceSuite: (opts: {
+        baseUrl?: string;
+        workspace?: string;
+        token?: string;
+        fetchImpl?: (url: string, init?: RequestInit) => Promise<{
+          ok: boolean;
+          status: number;
+          text: () => Promise<string>;
+        }>;
+        logger?: { log: (msg: string) => void; error: (msg: string) => void };
+      }) => Promise<{
+        ok: boolean;
+        passed: number;
+        failed: number;
+        total: number;
+        results: Array<{ name: string; passed: boolean; detail?: string }>;
+      }>;
+    };
+
+    const secretToken = 'wm_super_secret_local_token_999';
+    const loggedLines: string[] = [];
+    const silentLogger = {
+      log: (msg: string) => loggedLines.push(msg),
+      error: (msg: string) => loggedLines.push(msg),
+    };
+
+    // 1. Token redaction and loopback URL enforcement
+    expect(
+      runnerMod.redactToken(`Bearer ${secretToken} failed`, secretToken)
+    ).toBe('Bearer [REDACTED_WINDMILL_TOKEN] failed');
+    expect(() =>
+      runnerMod.validateLocalBaseUrl('https://remote-windmill.example.com')
+    ).toThrow(/Refusing non-loopback Windmill base URL/);
+    expect(runnerMod.validateLocalBaseUrl('http://127.0.0.1:8080')).toBe(
+      'http://127.0.0.1:8080'
+    );
+
+    // 2. Missing WINDMILL_TOKEN fails closed immediately
+    const noTokenSummary = await runnerMod.runLocalWindmillAcceptanceSuite({
+      token: '',
+      logger: silentLogger,
+    });
+    expect(noTokenSummary.ok).toBe(false);
+    expect(noTokenSummary.passed).toBe(0);
+    expect(noTokenSummary.failed).toBe(1);
+
+    // 3. Full 7-check suite against simulated Windmill loopback API backed by the real backend runnables
+    const prevWs = process.env.WM_WORKSPACE;
+    const prevJobId = process.env.WM_JOB_ID;
+    try {
+      process.env.WM_WORKSPACE = 'uor-offline-foundry';
+      process.env.WM_JOB_ID = 'wm-local-runner-job-42';
+
+      const mockFetch = async (url: string, init?: RequestInit) => {
+        const authHeader = (init?.headers as Record<string, string>)?.Authorization;
+        if (authHeader !== `Bearer ${secretToken}`) {
+          return {
+            ok: false,
+            status: 401,
+            text: async () => JSON.stringify({ error: 'Unauthorized token' }),
+          };
+        }
+        const parsedArgs = init?.body ? JSON.parse(String(init.body)) : {};
+
+        if (url.endsWith('/jobs/run_wait_result/p/u/admin/worker_smoke_test')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({ status: 'RUNTIME_SMOKE_TEST_PASS', worker: 'bun' }),
+          };
+        }
+
+        if (url.endsWith('/jobs/run_wait_result/p/u/admin/runtime_health')) {
+          try {
+            const res = await runtimeHealthMain(
+              parsedArgs.workspace,
+              parsedArgs.options
+            );
+            return {
+              ok: true,
+              status: 200,
+              text: async () => JSON.stringify(res),
+            };
+          } catch (err) {
+            return {
+              ok: false,
+              status: 400,
+              text: async () =>
+                JSON.stringify({
+                  error: {
+                    name: 'Error',
+                    message: err instanceof Error ? err.message : String(err),
+                  },
+                }),
+            };
+          }
+        }
+
+        if (url.endsWith('/jobs/run_wait_result/p/u/admin/intake_validate')) {
+          const res = await intakeValidateMain(parsedArgs.input ?? parsedArgs);
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify(res),
+          };
+        }
+
+        if (url.endsWith('/jobs/run_wait_result/p/u/admin/job_status')) {
+          const res = await jobStatusMain(parsedArgs.input ?? parsedArgs);
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify(res),
+          };
+        }
+
+        return {
+          ok: false,
+          status: 404,
+          text: async () => 'Not found',
+        };
+      };
+
+      loggedLines.length = 0;
+      const passSummary = await runnerMod.runLocalWindmillAcceptanceSuite({
+        baseUrl: 'http://127.0.0.1:8080',
+        workspace: 'uor-offline-foundry',
+        token: secretToken,
+        fetchImpl: mockFetch,
+        logger: silentLogger,
+      });
+
+      expect(passSummary.ok).toBe(true);
+      expect(passSummary.passed).toBe(7);
+      expect(passSummary.failed).toBe(0);
+      expect(passSummary.total).toBe(7);
+      // Verify token is never printed in any log line
+      expect(loggedLines.some((line) => line.includes(secretToken))).toBe(false);
+      expect(
+        loggedLines.some((line) =>
+          line.includes('[windmill:test] Summary: 7 passed, 0 failed, 7 total')
+        )
+      ).toBe(true);
+
+      // 4. Verify failure detection and exact PASS/FAIL count when a script fails or leaks token in error
+      const failingFetch = async (url: string, init?: RequestInit) => {
+        if (url.endsWith('/jobs/run_wait_result/p/u/admin/worker_smoke_test')) {
+          throw new Error(`Connection reset with header Bearer ${secretToken}`);
+        }
+        return mockFetch(url, init);
+      };
+
+      loggedLines.length = 0;
+      const failSummary = await runnerMod.runLocalWindmillAcceptanceSuite({
+        baseUrl: 'http://127.0.0.1:8080',
+        workspace: 'uor-offline-foundry',
+        token: secretToken,
+        fetchImpl: failingFetch,
+        logger: silentLogger,
+      });
+
+      expect(failSummary.ok).toBe(false);
+      expect(failSummary.passed).toBe(6);
+      expect(failSummary.failed).toBe(1);
+      expect(failSummary.total).toBe(7);
+      expect(failSummary.results[0].passed).toBe(false);
+      expect(failSummary.results[0].detail).toContain('[REDACTED_WINDMILL_TOKEN]');
+      expect(failSummary.results[0].detail).not.toContain(secretToken);
+      expect(loggedLines.some((line) => line.includes(secretToken))).toBe(false);
+    } finally {
+      if (prevWs === undefined) delete process.env.WM_WORKSPACE;
+      else process.env.WM_WORKSPACE = prevWs;
+      if (prevJobId === undefined) delete process.env.WM_JOB_ID;
+      else process.env.WM_JOB_ID = prevJobId;
+    }
+  });
 });
+
 
