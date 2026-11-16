@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { RefreshCw, Search } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, RefreshCw, Search } from 'lucide-react';
 import {
   Bar,
   BarChart,
@@ -29,9 +29,20 @@ export interface JobRegistryPanelProps {
   initialJobs?: WindmillJobRecord[];
   projectId?: string;
   title?: string;
+  initialPageSize?: number;
 }
 
-type StatusFilter = 'ALL' | 'RUNNING' | 'BUILT' | 'VERIFIED';
+export type StatusFilter = 'ALL' | 'RUNNING' | 'BUILT' | 'VERIFIED';
+export type TimestampSortOrder = 'desc' | 'asc';
+
+interface ClassifiedJobItem {
+  job: WindmillJobRecord;
+  evidenceStage: RecentJobRegistryState;
+  statusLabel: string;
+  timestampIso: string;
+  timestampMs: number;
+  searchIndex: string;
+}
 
 const STATE_DISPLAY_LABEL: Record<RecentJobRegistryState, string> = {
   RUNNING: 'Running',
@@ -47,11 +58,66 @@ const STATE_BAR_COLORS: Record<RecentJobRegistryState, string> = {
   BLOCKED: '#fb7185',
 };
 
+interface JobRegistryRowProps {
+  item: ClassifiedJobItem;
+  isSelected: boolean;
+  onSelect: (jobId: string) => void;
+}
+
+const JobRegistryRow: React.FC<JobRegistryRowProps> = React.memo(
+  ({ item, isSelected, onSelect }) => {
+    const { job, evidenceStage, statusLabel, timestampIso } = item;
+    return (
+      <tr
+        data-testid={`job-registry-row-${job.jobId}`}
+        onClick={() => onSelect(job.jobId)}
+        className={`cursor-pointer transition-colors ${
+          isSelected ? 'bg-blue-950/25' : 'hover:bg-slate-900/60'
+        }`}
+      >
+        <td className="py-2.5 px-3 font-mono text-slate-200 whitespace-nowrap">
+          {job.jobId}
+        </td>
+        <td className="py-2.5 px-3 text-slate-300">
+          <div className="font-medium text-slate-200">{job.workflowName}</div>
+          <div className="text-[11px] font-mono text-slate-500">
+            {job.flowPath}
+          </div>
+        </td>
+        <td className="py-2.5 px-3 whitespace-nowrap">
+          <div className="flex items-center gap-2">
+            <StatusTag value={evidenceStage} />
+            <span className="font-mono text-[11px] text-slate-300">
+              {statusLabel}
+            </span>
+          </div>
+        </td>
+        <td
+          data-testid={`job-registry-timestamp-${job.jobId}`}
+          className="py-2.5 px-3 font-mono text-slate-400 tabular-nums whitespace-nowrap"
+        >
+          {timestampIso}
+        </td>
+        <td className="py-2.5 px-3 text-right font-mono text-[11px] whitespace-nowrap">
+          {job.isSyntheticFixture ? (
+            <span className="text-amber-300">DEMO FIXTURE</span>
+          ) : (
+            <span className="text-emerald-300">LIVE WINDMILL</span>
+          )}
+        </td>
+      </tr>
+    );
+  }
+);
+
+JobRegistryRow.displayName = 'JobRegistryRow';
+
 export const JobRegistryPanel: React.FC<JobRegistryPanelProps> = ({
   windmillService,
   initialJobs,
   projectId,
   title = 'Recent Job Registry',
+  initialPageSize = 50,
 }) => {
   const defaultJobs = useMemo(
     () =>
@@ -64,7 +130,10 @@ export const JobRegistryPanel: React.FC<JobRegistryPanelProps> = ({
 
   const [jobs, setJobs] = useState<WindmillJobRecord[]>(defaultJobs);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
+  const [sortOrder, setSortOrder] = useState<TimestampSortOrder>('desc');
   const [searchQuery, setSearchQuery] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(initialPageSize);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(
     defaultJobs[0]?.jobId ?? null
   );
@@ -75,6 +144,7 @@ export const JobRegistryPanel: React.FC<JobRegistryPanelProps> = ({
   useEffect(() => {
     if (initialJobs) {
       setJobs(initialJobs);
+      setCurrentPage(1);
       if (initialJobs.length > 0 && !selectedJobId) {
         setSelectedJobId(initialJobs[0].jobId);
       }
@@ -87,6 +157,7 @@ export const JobRegistryPanel: React.FC<JobRegistryPanelProps> = ({
         ? DEMO_WINDMILL_JOB_FIXTURES.filter((j) => j.projectId === projectId)
         : DEMO_WINDMILL_JOB_FIXTURES;
       setJobs(fallback);
+      setCurrentPage(1);
       setDiagnostic({
         timestamp: new Date().toISOString(),
         endpoint: WINDMILL_TARGET_CONFIG.baseUrl,
@@ -104,6 +175,7 @@ export const JobRegistryPanel: React.FC<JobRegistryPanelProps> = ({
     try {
       const response = await windmillService.listApprovedExecutionHistory(projectId);
       setJobs(response.records);
+      setCurrentPage(1);
       setDiagnostic(response.diagnostic ?? null);
       if (response.records.length > 0) {
         setSelectedJobId(response.records[0].jobId);
@@ -113,14 +185,23 @@ export const JobRegistryPanel: React.FC<JobRegistryPanelProps> = ({
     }
   };
 
-  const classifiedJobs = useMemo(
+  // Precompute classification, numeric epoch timestamp, and lowercase search index once per jobs list
+  const classifiedJobs = useMemo<ClassifiedJobItem[]>(
     () =>
       jobs.map((job) => {
         const evidenceStage = classifyWindmillJobEvidenceStage(job);
+        const statusLabel = STATE_DISPLAY_LABEL[evidenceStage];
+        const timestampIso = job.completedAt ?? job.startedAt;
+        const parsedMs = Date.parse(timestampIso);
+        const timestampMs = Number.isNaN(parsedMs) ? 0 : parsedMs;
+        const searchIndex = `${job.jobId} ${job.workflowName} ${job.flowPath} ${statusLabel}`.toLowerCase();
         return {
           job,
           evidenceStage,
-          statusLabel: STATE_DISPLAY_LABEL[evidenceStage],
+          statusLabel,
+          timestampIso,
+          timestampMs,
+          searchIndex,
         };
       }),
     [jobs]
@@ -133,8 +214,8 @@ export const JobRegistryPanel: React.FC<JobRegistryPanelProps> = ({
       VERIFIED: 0,
       BLOCKED: 0,
     };
-    for (const item of classifiedJobs) {
-      counts[item.evidenceStage] += 1;
+    for (let i = 0; i < classifiedJobs.length; i += 1) {
+      counts[classifiedJobs[i].evidenceStage] += 1;
     }
     return counts;
   }, [classifiedJobs]);
@@ -163,29 +244,63 @@ export const JobRegistryPanel: React.FC<JobRegistryPanelProps> = ({
     [distributionCounts]
   );
 
-  const filteredJobs = useMemo(() => {
+  // Performant client-side filtering & timestamp sorting over pre-indexed items
+  const filteredAndSortedJobs = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    return classifiedJobs.filter(({ job, evidenceStage, statusLabel }) => {
-      if (statusFilter !== 'ALL' && evidenceStage !== statusFilter) {
-        return false;
+    const filtered: ClassifiedJobItem[] = [];
+
+    for (let i = 0; i < classifiedJobs.length; i += 1) {
+      const item = classifiedJobs[i];
+      if (statusFilter !== 'ALL' && item.evidenceStage !== statusFilter) {
+        continue;
       }
-      if (!q) return true;
-      return (
-        job.jobId.toLowerCase().includes(q) ||
-        job.workflowName.toLowerCase().includes(q) ||
-        job.flowPath.toLowerCase().includes(q) ||
-        statusLabel.toLowerCase().includes(q)
-      );
+      if (q && !item.searchIndex.includes(q)) {
+        continue;
+      }
+      filtered.push(item);
+    }
+
+    filtered.sort((a, b) => {
+      const diff =
+        sortOrder === 'asc'
+          ? a.timestampMs - b.timestampMs
+          : b.timestampMs - a.timestampMs;
+      if (diff !== 0) return diff;
+      return a.job.jobId.localeCompare(b.job.jobId);
     });
-  }, [classifiedJobs, searchQuery, statusFilter]);
+
+    return filtered;
+  }, [classifiedJobs, searchQuery, statusFilter, sortOrder]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredAndSortedJobs.length / pageSize));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+
+  const paginatedJobs = useMemo(() => {
+    const startIndex = (safeCurrentPage - 1) * pageSize;
+    return filteredAndSortedJobs.slice(startIndex, startIndex + pageSize);
+  }, [filteredAndSortedJobs, safeCurrentPage, pageSize]);
 
   const selectedJobEntry = useMemo(
     () =>
-      filteredJobs.find((item) => item.job.jobId === selectedJobId) ??
-      filteredJobs[0] ??
+      filteredAndSortedJobs.find((item) => item.job.jobId === selectedJobId) ??
+      filteredAndSortedJobs[0] ??
       null,
-    [filteredJobs, selectedJobId]
+    [filteredAndSortedJobs, selectedJobId]
   );
+
+  const handleStatusFilterChange = useCallback((nextFilter: StatusFilter) => {
+    setStatusFilter(nextFilter);
+    setCurrentPage(1);
+  }, []);
+
+  const handleToggleSortOrder = useCallback(() => {
+    setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'));
+    setCurrentPage(1);
+  }, []);
+
+  const handleSelectRow = useCallback((jobId: string) => {
+    setSelectedJobId(jobId);
+  }, []);
 
   return (
     <section
@@ -330,7 +445,7 @@ export const JobRegistryPanel: React.FC<JobRegistryPanelProps> = ({
           </div>
         </div>
 
-        {/* Interactive Filter & Search + Table */}
+        {/* Interactive Filter, Timestamp Sort & Search + Table */}
         <div className="xl:col-span-2 flex flex-col justify-between space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div
@@ -349,8 +464,9 @@ export const JobRegistryPanel: React.FC<JobRegistryPanelProps> = ({
                 <button
                   key={tab.id}
                   type="button"
+                  aria-pressed={statusFilter === tab.id}
                   data-testid={`job-registry-filter-${tab.id.toLowerCase()}`}
-                  onClick={() => setStatusFilter(tab.id)}
+                  onClick={() => handleStatusFilterChange(tab.id)}
                   className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
                     statusFilter === tab.id
                       ? 'bg-blue-600 text-white'
@@ -362,20 +478,40 @@ export const JobRegistryPanel: React.FC<JobRegistryPanelProps> = ({
               ))}
             </div>
 
-            <div className="relative flex-1 min-w-[200px] max-w-xs">
-              <Search
-                className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2"
-                aria-hidden="true"
-              />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Filter by Job ID or workflow..."
-                aria-label="Filter recent Windmill jobs"
-                data-testid="job-registry-search-input"
-                className="w-full bg-[#0B0F17] border border-slate-800 rounded-md pl-8 pr-3 py-1.5 text-xs font-mono text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-blue-500"
-              />
+            <div className="flex flex-wrap items-center gap-2 flex-1 justify-end">
+              <button
+                type="button"
+                data-testid="job-registry-sort-toggle"
+                onClick={handleToggleSortOrder}
+                aria-label={`Sort by timestamp (${sortOrder === 'desc' ? 'newest first' : 'oldest first'})`}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-mono text-slate-300 bg-[#0B0F17] hover:bg-slate-800 border border-slate-800 rounded-md transition-colors"
+              >
+                {sortOrder === 'desc' ? (
+                  <ArrowDown className="w-3.5 h-3.5 text-blue-400" aria-hidden="true" />
+                ) : (
+                  <ArrowUp className="w-3.5 h-3.5 text-blue-400" aria-hidden="true" />
+                )}
+                <span>Timestamp: {sortOrder === 'desc' ? 'Newest' : 'Oldest'}</span>
+              </button>
+
+              <div className="relative min-w-[200px] max-w-xs flex-1">
+                <Search
+                  className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2"
+                  aria-hidden="true"
+                />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => {
+                    setSearchQuery(e.target.value);
+                    setCurrentPage(1);
+                  }}
+                  placeholder="Filter by Job ID or workflow..."
+                  aria-label="Filter recent Windmill jobs"
+                  data-testid="job-registry-search-input"
+                  className="w-full bg-[#0B0F17] border border-slate-800 rounded-md pl-8 pr-3 py-1.5 text-xs font-mono text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-blue-500"
+                />
+              </div>
             </div>
           </div>
 
@@ -389,12 +525,25 @@ export const JobRegistryPanel: React.FC<JobRegistryPanelProps> = ({
                   <th className="py-2.5 px-3">Job ID</th>
                   <th className="py-2.5 px-3">Workflow / Flow Path</th>
                   <th className="py-2.5 px-3">Status</th>
-                  <th className="py-2.5 px-3">Timestamp</th>
+                  <th
+                    aria-sort={sortOrder === 'asc' ? 'ascending' : 'descending'}
+                    className="py-2.5 px-3"
+                  >
+                    <button
+                      type="button"
+                      data-testid="job-registry-sort-timestamp"
+                      onClick={handleToggleSortOrder}
+                      className="inline-flex items-center gap-1 font-medium text-slate-300 hover:text-white transition-colors"
+                    >
+                      <span>Timestamp</span>
+                      <ArrowUpDown className="w-3 h-3 text-slate-500" aria-hidden="true" />
+                    </button>
+                  </th>
                   <th className="py-2.5 px-3 text-right">Origin</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/70 text-xs">
-                {filteredJobs.length === 0 ? (
+                {paginatedJobs.length === 0 ? (
                   <tr>
                     <td
                       colSpan={5}
@@ -404,56 +553,73 @@ export const JobRegistryPanel: React.FC<JobRegistryPanelProps> = ({
                     </td>
                   </tr>
                 ) : (
-                  filteredJobs.map(({ job, evidenceStage, statusLabel }) => {
-                    const isSelected = selectedJobEntry?.job.jobId === job.jobId;
-                    const timestamp = job.completedAt ?? job.startedAt;
-                    return (
-                      <tr
-                        key={job.jobId}
-                        data-testid={`job-registry-row-${job.jobId}`}
-                        onClick={() => setSelectedJobId(job.jobId)}
-                        className={`cursor-pointer transition-colors ${
-                          isSelected
-                            ? 'bg-blue-950/25'
-                            : 'hover:bg-slate-900/60'
-                        }`}
-                      >
-                        <td className="py-2.5 px-3 font-mono text-slate-200 whitespace-nowrap">
-                          {job.jobId}
-                        </td>
-                        <td className="py-2.5 px-3 text-slate-300">
-                          <div className="font-medium text-slate-200">
-                            {job.workflowName}
-                          </div>
-                          <div className="text-[11px] font-mono text-slate-500">
-                            {job.flowPath}
-                          </div>
-                        </td>
-                        <td className="py-2.5 px-3 whitespace-nowrap">
-                          <div className="flex items-center gap-2">
-                            <StatusTag value={evidenceStage} />
-                            <span className="font-mono text-[11px] text-slate-300">
-                              {statusLabel}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="py-2.5 px-3 font-mono text-slate-400 tabular-nums whitespace-nowrap">
-                          {timestamp}
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-mono text-[11px] whitespace-nowrap">
-                          {job.isSyntheticFixture ? (
-                            <span className="text-amber-300">DEMO FIXTURE</span>
-                          ) : (
-                            <span className="text-emerald-300">LIVE WINDMILL</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })
+                  paginatedJobs.map((item) => (
+                    <JobRegistryRow
+                      key={item.job.jobId}
+                      item={item}
+                      isSelected={selectedJobEntry?.job.jobId === item.job.jobId}
+                      onSelect={handleSelectRow}
+                    />
+                  ))
                 )}
               </tbody>
             </table>
           </div>
+
+          {/* Client-side pagination controls for large job histories */}
+          {filteredAndSortedJobs.length > pageSize && (
+            <div
+              data-testid="job-registry-pagination"
+              className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs font-mono text-slate-400"
+            >
+              <span>
+                Showing {(safeCurrentPage - 1) * pageSize + 1}–
+                {Math.min(safeCurrentPage * pageSize, filteredAndSortedJobs.length)} of{' '}
+                {filteredAndSortedJobs.length} matching jobs
+              </span>
+              <div className="flex items-center gap-2">
+                <label className="flex items-center gap-1.5 text-[11px]">
+                  <span>Rows:</span>
+                  <select
+                    data-testid="job-registry-page-size-select"
+                    value={pageSize}
+                    onChange={(e) => {
+                      setPageSize(Number(e.target.value));
+                      setCurrentPage(1);
+                    }}
+                    className="bg-[#0B0F17] border border-slate-800 rounded px-1.5 py-0.5 text-slate-200"
+                  >
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  data-testid="job-registry-prev-page"
+                  disabled={safeCurrentPage <= 1}
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  className="inline-flex items-center gap-1 px-2 py-1 bg-[#0B0F17] border border-slate-800 rounded text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Prev</span>
+                </button>
+                <span data-testid="job-registry-page-indicator">
+                  Page {safeCurrentPage} / {totalPages}
+                </span>
+                <button
+                  type="button"
+                  data-testid="job-registry-next-page"
+                  disabled={safeCurrentPage >= totalPages}
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  className="inline-flex items-center gap-1 px-2 py-1 bg-[#0B0F17] border border-slate-800 rounded text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+                >
+                  <span>Next</span>
+                  <ChevronRight className="w-3.5 h-3.5" aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -480,3 +646,4 @@ export const JobRegistryPanel: React.FC<JobRegistryPanelProps> = ({
     </section>
   );
 };
+

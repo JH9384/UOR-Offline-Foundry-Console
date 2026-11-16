@@ -4,12 +4,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IntakeModal } from '../shared/components/IntakeModal';
 import { JobRegistryPanel } from '../shared/components/studio/JobRegistryPanel';
 import { SourceCompliancePanel } from '../shared/components/studio/SourceCompliancePanel';
+import { OverviewView } from '../shared/components/views/OverviewView';
 import { FailClosedLocalWindmillService } from '../shared/adapters/windmillExecutionService';
 import {
+  INITIAL_ACTIVITY,
   INITIAL_APPROVALS,
   INITIAL_ARTIFACTS,
+  INITIAL_CONNECTIONS,
   INITIAL_PROJECTS,
   INITIAL_VERIFICATION_SUITES,
+  INITIAL_WORKFLOW_RUNS,
 } from '../shared/data/seedFoundryData';
 import {
   computeDeterministicPureStateHash,
@@ -274,14 +278,108 @@ describe('UOR Project Templates, State Transitions & Studio Components (Vitest +
     expect(screen.getByTestId('job-registry-summary-counts').textContent).toContain('Built: 1');
     expect(screen.getByTestId('job-registry-summary-counts').textContent).toContain('Verified: 1');
 
-    expect(screen.getByTestId('job-registry-row-wm-job-running-101')).toBeTruthy();
-    expect(screen.getByTestId('job-registry-row-wm-job-built-102')).toBeTruthy();
-    expect(screen.getByTestId('job-registry-row-wm-job-verified-103')).toBeTruthy();
+    // Default sort is descending by timestamp (newest first: 103 -> 102 -> 101)
+    const rowsDesc = screen.getAllByTestId(/^job-registry-row-wm-job-/);
+    expect(rowsDesc.map((r) => r.getAttribute('data-testid'))).toEqual([
+      'job-registry-row-wm-job-verified-103',
+      'job-registry-row-wm-job-built-102',
+      'job-registry-row-wm-job-running-101',
+    ]);
 
-    // Filter to Verified only
+    // Toggle sort to ascending by timestamp (oldest first: 101 -> 102 -> 103)
+    fireEvent.click(screen.getByTestId('job-registry-sort-timestamp'));
+    const rowsAsc = screen.getAllByTestId(/^job-registry-row-wm-job-/);
+    expect(rowsAsc.map((r) => r.getAttribute('data-testid'))).toEqual([
+      'job-registry-row-wm-job-running-101',
+      'job-registry-row-wm-job-built-102',
+      'job-registry-row-wm-job-verified-103',
+    ]);
+
+    // Filter to Running, Built, and Verified individually
+    fireEvent.click(screen.getByTestId('job-registry-filter-running'));
+    expect(screen.getByTestId('job-registry-row-wm-job-running-101')).toBeTruthy();
+    expect(screen.queryByTestId('job-registry-row-wm-job-built-102')).toBeNull();
+    expect(screen.queryByTestId('job-registry-row-wm-job-verified-103')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('job-registry-filter-built'));
+    expect(screen.queryByTestId('job-registry-row-wm-job-running-101')).toBeNull();
+    expect(screen.getByTestId('job-registry-row-wm-job-built-102')).toBeTruthy();
+    expect(screen.queryByTestId('job-registry-row-wm-job-verified-103')).toBeNull();
+
     fireEvent.click(screen.getByTestId('job-registry-filter-verified'));
     expect(screen.queryByTestId('job-registry-row-wm-job-running-101')).toBeNull();
     expect(screen.queryByTestId('job-registry-row-wm-job-built-102')).toBeNull();
     expect(screen.getByTestId('job-registry-row-wm-job-verified-103')).toBeTruthy();
+
+    cleanup();
+
+    // Verify windowed pagination keeps DOM bounded when job history grows large (250 jobs)
+    const largeHistory = Array.from({ length: 250 }, (_, idx) => {
+      const padded = String(idx + 1).padStart(4, '0');
+      const isRunning = idx % 3 === 0;
+      const isBuilt = idx % 3 === 1;
+      const isoTime = new Date(Date.UTC(2026, 2, 29, 0, 0, idx)).toISOString();
+      return {
+        jobId: `wm-bulk-${padded}`,
+        projectId: calcProject.id,
+        workflowId: calcProject.workflowId,
+        workflowName: `Bulk Workflow ${padded}`,
+        flowPath: isRunning
+          ? 'f/uor_foundry/prismpm_check'
+          : isBuilt
+            ? 'f/uor_foundry/prismpm_build_locked'
+            : 'f/uor_foundry/prismpm_verify',
+        flowVersion: '1.0.0',
+        sourceRevision: calcProject.sourceRevision,
+        idempotencyKey: `idem-bulk-${padded}`,
+        state: isRunning ? ('RUNNING' as const) : ('COMPLETED' as const),
+        startedAt: isoTime,
+        completedAt: isRunning ? undefined : isoTime,
+        logs: [`Log ${padded}`],
+        structuredResult: isRunning
+          ? undefined
+          : { stage: isBuilt ? 'BUILD' : 'VERIFY', exitCode: 0 },
+        artifactRefs: isRunning ? [] : ['art-prism-calc-holo'],
+        evidenceRefs: !isRunning && !isBuilt ? [`ev-${padded}`] : [],
+        retryAvailable: false,
+        isSyntheticFixture: false,
+        flowRegisteredInWorkspace: true,
+      };
+    });
+
+    render(<JobRegistryPanel initialJobs={largeHistory} initialPageSize={50} />);
+    const renderedRowsPage1 = screen.getAllByTestId(/^job-registry-row-wm-bulk-/);
+    expect(renderedRowsPage1).toHaveLength(50);
+    expect(screen.getByTestId('job-registry-pagination')).toBeTruthy();
+    expect(screen.getByTestId('job-registry-page-indicator').textContent).toBe('Page 1 / 5');
+    // Newest job (wm-bulk-0250) is first on page 1
+    expect(renderedRowsPage1[0].getAttribute('data-testid')).toBe(
+      'job-registry-row-wm-bulk-0250'
+    );
+
+    fireEvent.click(screen.getByTestId('job-registry-next-page'));
+    expect(screen.getByTestId('job-registry-page-indicator').textContent).toBe('Page 2 / 5');
+
+    cleanup();
+
+    // Verify JobRegistryPanel is integrated into the OverviewView dashboard
+    render(
+      <OverviewView
+        projects={INITIAL_PROJECTS}
+        runs={INITIAL_WORKFLOW_RUNS}
+        verifications={INITIAL_VERIFICATION_SUITES}
+        approvals={INITIAL_APPROVALS}
+        connections={INITIAL_CONNECTIONS}
+        activity={INITIAL_ACTIVITY}
+        onNavigate={vi.fn()}
+        onSelectProject={vi.fn()}
+        onOpenIntake={vi.fn()}
+        windmillService={mockService}
+      />
+    );
+    expect(screen.getByTestId('job-registry-panel')).toBeTruthy();
+    expect(screen.getByTestId('job-registry-pie-chart')).toBeTruthy();
+    expect(screen.getByTestId('job-registry-table')).toBeTruthy();
   });
 });
+

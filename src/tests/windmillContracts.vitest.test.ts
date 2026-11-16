@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   CanonicalCommandId,
@@ -1049,19 +1051,29 @@ describe('Phase A/B/C: Local Windmill Execution Client, Source-Package Handoff &
     ]);
     expect(FIXED_WINDMILL_COMMAND_REGISTRY).toHaveLength(16);
 
-    // 2. Read-only runtime_health runnable verification (compiler & release disabled)
+    // 2. Truthful runtime_health runnable verification: user-supplied authenticatedSession and registeredRunnables are ignored
     const healthReport = await runtimeHealthMain('uor-offline-foundry', {
       authenticatedSession: true,
       registeredRunnables: [...CANONICAL_RAW_APP_RUNNABLES],
-      registeredFlows: [],
+      registeredFlows: ['u/foundry/calculator_verify_flow'],
     });
     expect(healthReport.workspace).toBe('uor-offline-foundry');
-    expect(healthReport.packagingStatus).toBe('REGISTERED_READ_ONLY_VERIFIED');
-    expect(healthReport.readOnlyHealthVerified).toBe(true);
+    expect(healthReport.untrustedInputIgnored).toBe(true);
+    expect(healthReport.packagingStatus).toBe('PREPARED_NOT_VERIFIED');
+    expect(healthReport.readOnlyHealthVerified).toBe(false);
     expect(healthReport.liveExecutionEnabled).toBe(false);
+    expect(healthReport.compilerDispatchEnabled).toBe(false);
+    expect(healthReport.workflowExecutionEnabled).toBe(false);
+    expect(healthReport.lmStudioResourceBound).toBe(false);
     expect(healthReport.releaseAuthorityDelegated).toBe(false);
+    expect(healthReport.triggersEnabled).toBe(false);
     expect(healthReport.canonicalRegistryCommandCount).toBe(16);
-    expect(healthReport.registeredRunnables).toHaveLength(6);
+    expect(healthReport.preparedRunnables).toHaveLength(6);
+    expect(healthReport.registeredRunnables).toEqual([]);
+    expect(healthReport.registeredFlows).toEqual([]);
+    expect(healthReport.checks.sessionAuthentication).toBe('UNVERIFIED');
+    expect(healthReport.checks.runnableRegistration).toBe('UNVERIFIED');
+    expect(healthReport.checks.flowRegistration).toBe('UNVERIFIED');
 
     // 3. Generated wmill.ts contract acceptance check
     const mockGeneratedWmill = {
@@ -1104,6 +1116,82 @@ describe('Phase A/B/C: Local Windmill Execution Client, Source-Package Handoff &
     expect(readOnlyJobResult.found).toBe(true);
     expect(readOnlyJobResult.status).toBe('RETRIEVED_READ_ONLY');
     expect(readOnlyJobResult.snapshot?.jobId).toBe('wm-readonly-accept-01');
+  });
+
+  it('9. verifies standalone Windmill runnable bundling with zero relative imports and truthful worker environment vs unknown registration status', async () => {
+    const repoRoot = process.cwd();
+    const relativeImportRegex =
+      /(?:from|import)\s*['"](\.[^'"]+)['"]|import\(\s*['"](\.[^'"]+)['"]\s*\)/;
+
+    // 1. Canonical backend/runtime_health.ts has zero relative imports (no ./generated_command_registry.ts 404)
+    const canonicalRuntimeHealthSrc = fs.readFileSync(
+      path.join(repoRoot, 'uor_foundry.raw_app/backend/runtime_health.ts'),
+      'utf8'
+    );
+    expect(relativeImportRegex.test(canonicalRuntimeHealthSrc)).toBe(false);
+    expect(canonicalRuntimeHealthSrc).not.toContain('./generated_command_registry.ts');
+
+    // 2. All 6 standalone bundled runnables in uor_foundry.raw_app/dist/windmill/ exist and have zero relative imports
+    const bundledRunnables = [
+      'runtime_health.ts',
+      'intake_validate.ts',
+      'job_status.ts',
+      'local_ai_advisory.ts',
+      'workflow_dispatch.ts',
+      'prism_stage_dispatch.ts',
+    ];
+    for (const filename of bundledRunnables) {
+      const bundledPath = path.join(
+        repoRoot,
+        'uor_foundry.raw_app/dist/windmill',
+        filename
+      );
+      expect(fs.existsSync(bundledPath)).toBe(true);
+      const bundledContent = fs.readFileSync(bundledPath, 'utf8');
+      expect(relativeImportRegex.test(bundledContent)).toBe(false);
+    }
+
+    // 3. Execute bundled standalone runtime_health.ts and verify worker env detection & unknown check preservation
+    const prevWs = process.env.WM_WORKSPACE;
+    const prevJobId = process.env.WM_JOB_ID;
+    try {
+      process.env.WM_WORKSPACE = 'uor-offline-foundry';
+      process.env.WM_JOB_ID = 'wm-bun-worker-smoke-001';
+
+      const bundledHealthMod = await import(
+        '../../uor_foundry.raw_app/dist/windmill/runtime_health.ts'
+      );
+      const workerResult = await bundledHealthMod.main('uor-offline-foundry', {
+        authenticatedSession: true,
+        registeredRunnables: ['backend/runtime_health.ts'],
+      });
+
+      expect(workerResult.checks.workspaceAllowed).toBe(true);
+      expect(workerResult.checks.workerEnvironment).toBe('VERIFIED');
+      // Even inside a worker, unknown session/runnable/flow checks remain UNVERIFIED and caller claims are ignored
+      expect(workerResult.untrustedInputIgnored).toBe(true);
+      expect(workerResult.checks.sessionAuthentication).toBe('UNVERIFIED');
+      expect(workerResult.checks.runnableRegistration).toBe('UNVERIFIED');
+      expect(workerResult.checks.flowRegistration).toBe('UNVERIFIED');
+      expect(workerResult.readOnlyHealthVerified).toBe(false);
+      expect(workerResult.packagingStatus).toBe('PREPARED_NOT_VERIFIED');
+      expect(workerResult.registeredRunnables).toEqual([]);
+      expect(workerResult.liveExecutionEnabled).toBe(false);
+      expect(workerResult.compilerDispatchEnabled).toBe(false);
+      expect(workerResult.workflowExecutionEnabled).toBe(false);
+      expect(workerResult.triggersEnabled).toBe(false);
+
+      // Unauthorized worker WM_WORKSPACE fails closed even when caller passes 'uor-offline-foundry'
+      process.env.WM_WORKSPACE = 'unauthorized-worker-ws';
+      await expect(bundledHealthMod.main('uor-offline-foundry')).rejects.toThrow(
+        /Unauthorized Windmill worker workspace/
+      );
+    } finally {
+      if (prevWs === undefined) delete process.env.WM_WORKSPACE;
+      else process.env.WM_WORKSPACE = prevWs;
+      if (prevJobId === undefined) delete process.env.WM_JOB_ID;
+      else process.env.WM_JOB_ID = prevJobId;
+    }
   });
 });
 

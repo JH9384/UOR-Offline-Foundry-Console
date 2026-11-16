@@ -176,6 +176,60 @@ function renderGeneratedFlowJson(mod) {
   return `${JSON.stringify(mod.buildCanonicalPrismFlowManifest(), null, 2)}\n`;
 }
 
+function renderInlineRegistryBlock(mod) {
+  const commandIds = mod.FIXED_WINDMILL_COMMAND_REGISTRY.map((entry) => entry.commandId);
+  return `// [AUTO-SYNCED-REGISTRY-START]
+export const ALLOWED_WINDMILL_WORKSPACE = ${JSON.stringify(mod.ALLOWED_WINDMILL_WORKSPACE)} as const;
+
+export const CANONICAL_COMMAND_IDS = ${JSON.stringify(commandIds, null, 2)} as const;
+// [AUTO-SYNCED-REGISTRY-END]`;
+}
+
+function syncRuntimeHealthInlineRegistry(mod) {
+  const runtimeHealthPath = path.join(RAW_APP_DIR, 'backend', 'runtime_health.ts');
+  const existing = fs.readFileSync(runtimeHealthPath, 'utf8');
+  const blockRegex = /\/\/ \[AUTO-SYNCED-REGISTRY-START\][\s\S]*?\/\/ \[AUTO-SYNCED-REGISTRY-END\]/;
+  if (!blockRegex.test(existing)) {
+    throw new Error(
+      'uor_foundry.raw_app/backend/runtime_health.ts is missing // [AUTO-SYNCED-REGISTRY-START] ... // [AUTO-SYNCED-REGISTRY-END] markers.'
+    );
+  }
+  const updated = existing.replace(blockRegex, renderInlineRegistryBlock(mod));
+  fs.writeFileSync(runtimeHealthPath, updated, 'utf8');
+}
+
+const BACKEND_RUNNABLE_FILES = [
+  'runtime_health.ts',
+  'intake_validate.ts',
+  'job_status.ts',
+  'local_ai_advisory.ts',
+  'workflow_dispatch.ts',
+  'prism_stage_dispatch.ts',
+];
+
+async function bundleStandaloneWindmillRunnables() {
+  const outDir = path.join(RAW_APP_DIR, 'dist', 'windmill');
+  fs.rmSync(outDir, { recursive: true, force: true });
+  fs.mkdirSync(outDir, { recursive: true });
+
+  for (const filename of BACKEND_RUNNABLE_FILES) {
+    const entryPoint = path.join(RAW_APP_DIR, 'backend', filename);
+    const outfile = path.join(outDir, filename);
+    await esbuild.build({
+      entryPoints: [entryPoint],
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      target: 'es2022',
+      outfile,
+      banner: {
+        js: `// @ts-nocheck\n// AUTO-BUNDLED STANDALONE WINDMILL RUNNABLE (${filename}) — ZERO RELATIVE IMPORTS`,
+      },
+      logLevel: 'silent',
+    });
+  }
+}
+
 function copyDirFiltered(src, dest) {
   fs.mkdirSync(dest, { recursive: true });
   const entries = fs.readdirSync(src, { withFileTypes: true });
@@ -223,15 +277,19 @@ async function prepare() {
   fs.mkdirSync(path.dirname(GENERATED_REGISTRY_FILE), { recursive: true });
   fs.writeFileSync(GENERATED_REGISTRY_FILE, renderGeneratedBackendRegistryTs(registryMod), 'utf8');
 
+  syncRuntimeHealthInlineRegistry(registryMod);
+
   fs.mkdirSync(path.dirname(GENERATED_FLOW_FILE), { recursive: true });
   fs.writeFileSync(GENERATED_FLOW_FILE, renderGeneratedFlowJson(registryMod), 'utf8');
+
+  await bundleStandaloneWindmillRunnables();
 
   const sharedCss = path.join(STAGED_SHARED_DIR, 'index.css');
   if (!fs.existsSync(sharedCss)) {
     throw new Error(`Missing shared CSS entrypoint after sync: ${sharedCss}`);
   }
   console.log(
-    '[windmill:prepare] Synced src/shared/ -> uor_foundry.raw_app/shared/ and generated backend/generated_command_registry.ts + flows/prism_hologram_delivery.flow.json'
+    '[windmill:prepare] Synced src/shared/ -> uor_foundry.raw_app/shared/, generated backend/generated_command_registry.ts + flows/prism_hologram_delivery.flow.json, and bundled standalone runnables in uor_foundry.raw_app/dist/windmill/'
   );
   return registryMod;
 }
@@ -255,6 +313,7 @@ async function validate(registryMod) {
     'backend/prism_stage_dispatch.ts',
     'backend/job_status.ts',
     'flows/prism_hologram_delivery.flow.json',
+    ...BACKEND_RUNNABLE_FILES.map((f) => `dist/windmill/${f}`),
   ];
 
   for (const rel of requiredFiles) {
@@ -269,6 +328,24 @@ async function validate(registryMod) {
   const actualRegistryTs = fs.readFileSync(GENERATED_REGISTRY_FILE, 'utf8');
   if (actualRegistryTs !== expectedRegistryTs) {
     throw new Error('Drift detected in uor_foundry.raw_app/backend/generated_command_registry.ts');
+  }
+
+  // Verify runtime_health.ts has zero relative imports and matches canonical registry 1-to-1
+  const runtimeHealthSrc = fs.readFileSync(path.join(RAW_APP_DIR, 'backend', 'runtime_health.ts'), 'utf8');
+  if (!runtimeHealthSrc.includes(renderInlineRegistryBlock(registryMod))) {
+    throw new Error('Drift detected in uor_foundry.raw_app/backend/runtime_health.ts inline registry block');
+  }
+  const relativeImportRegex = /(?:from|import)\s*['"](\.[^'"]+)['"]|import\(\s*['"](\.[^'"]+)['"]\s*\)/;
+  if (relativeImportRegex.test(runtimeHealthSrc)) {
+    throw new Error('uor_foundry.raw_app/backend/runtime_health.ts must not contain relative imports so it deploys cleanly in Windmill.');
+  }
+
+  // Verify all bundled standalone runnables in dist/windmill/ have zero relative imports
+  for (const filename of BACKEND_RUNNABLE_FILES) {
+    const bundledSrc = fs.readFileSync(path.join(RAW_APP_DIR, 'dist', 'windmill', filename), 'utf8');
+    if (relativeImportRegex.test(bundledSrc)) {
+      throw new Error(`Standalone bundled runnable uor_foundry.raw_app/dist/windmill/${filename} contains unresolved relative import.`);
+    }
   }
 
   const flowJson = JSON.parse(fs.readFileSync(GENERATED_FLOW_FILE, 'utf8'));
