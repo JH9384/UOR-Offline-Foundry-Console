@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   CanonicalCommandId,
@@ -1158,9 +1159,12 @@ describe('Phase A/B/C: Local Windmill Execution Client, Source-Package Handoff &
       process.env.WM_WORKSPACE = 'uor-offline-foundry';
       process.env.WM_JOB_ID = 'wm-bun-worker-smoke-001';
 
-      const bundledHealthMod = await import(
-        '../../uor_foundry.raw_app/dist/windmill/runtime_health.ts'
-      );
+      const bundledRuntimeHealthUrl = pathToFileURL(
+        path.join(repoRoot, 'uor_foundry.raw_app/dist/windmill/runtime_health.ts')
+      ).href;
+      const bundledHealthMod = (await import(
+        /* @vite-ignore */ bundledRuntimeHealthUrl
+      )) as { main: typeof runtimeHealthMain };
       const workerResult = await bundledHealthMod.main('uor-offline-foundry', {
         authenticatedSession: true,
         registeredRunnables: ['backend/runtime_health.ts'],
