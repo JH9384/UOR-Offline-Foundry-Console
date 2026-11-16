@@ -4,7 +4,11 @@ import {
   FIXED_WINDMILL_COMMAND_REGISTRY,
 } from '../shared/adapters/windmillCommandRegistry';
 import {
+  classifyWindmillJobEvidenceStage,
+  evaluateAuthoritativeEvidenceLifecycle,
+  executeCalculatorIntakeHandoffFlow,
   executeGovernedWorkflowContract,
+  FailClosedLocalWindmillService,
   MockWindmillBackendHealth,
   MockWindmillJobPollResponse,
   WindmillMockTransport,
@@ -15,6 +19,15 @@ import {
   INITIAL_PROJECTS,
   INITIAL_VERIFICATION_SUITES,
 } from '../shared/data/seedFoundryData';
+import {
+  buildCalculatorRuntimeHandoffPreview,
+  buildSourcePackageManifest,
+  validateSourcePackageForRuntimeHandoff,
+} from '../shared/services/sourceAuthoringService';
+import * as wmillContract from '../../uor_foundry.raw_app/wmill.contract';
+import { main as runtimeHealthMain } from '../../uor_foundry.raw_app/backend/runtime_health';
+import { main as jobStatusMain } from '../../uor_foundry.raw_app/backend/job_status';
+import { main as intakeValidateMain } from '../../uor_foundry.raw_app/backend/intake_validate';
 
 function createMockTransport(options?: {
   health?: Partial<MockWindmillBackendHealth>;
@@ -400,3 +413,622 @@ describe('Windmill Governed Workflow Contracts (13 Mocked-Backend Scenarios)', (
     expect(badCommand.failureCode).toBe('INVALID_COMMAND');
   });
 });
+
+describe('Phase A/B/C: Local Windmill Execution Client, Source-Package Handoff & Authoritative Evidence Lifecycle', () => {
+  const calcProject = INITIAL_PROJECTS[0];
+
+  it('1. fails closed when Windmill runtime is unreachable before enabling dispatch or job lookup', async () => {
+    const service = new FailClosedLocalWindmillService('VITE_AUTHENTICATED_LOCAL_PROXY', {
+      async probeHealth() {
+        return {
+          reachable: false,
+          workspace: 'uor-offline-foundry',
+          authenticated: false,
+          permissionsValidated: false,
+          registeredRunnables: [],
+          registeredFlows: [],
+          wmillContractStatus: 'WMILL_TS_NOT_GENERATED',
+        };
+      },
+      async fetchJobById() {
+        throw new Error('Should not be called when runtime health is unverified');
+      },
+    });
+
+    const health = await service.checkRuntimeHealth();
+    expect(health.reachable).toBe(false);
+    expect(health.readOnlyHealthVerified).toBe(false);
+    expect(health.dispatchEnabled).toBe(false);
+
+    const jobRes = await service.getJobStatusAndResult('wm-job-100');
+    expect(jobRes.ok).toBe(false);
+    if (!jobRes.ok) {
+      expect(jobRes.diagnostic.code).toBe('NOT_CONNECTED');
+    }
+
+    const submitRes = await service.submitAuthorizedWorkflow({
+      requestId: 'req-unreachable-1',
+      idempotencyKey: 'idem-unreachable-1',
+      projectId: calcProject.id,
+      workflowId: calcProject.workflowId,
+      flowPath: 'u/foundry/calculator_verify_flow',
+      flowVersion: '1.0.0',
+      sourceRevision: calcProject.sourceRevision,
+      operatorApproved: true,
+      requestedAt: '2026-03-29T10:00:00.000Z',
+      commandId: 'prismpm_check',
+      projectRelativePath: 'examples/Calculator',
+    });
+    expect(submitRes.ok).toBe(false);
+    if (!submitRes.ok) {
+      expect(submitRes.diagnostic.code).toBe('NOT_CONNECTED');
+    }
+  });
+
+  it('2. rejects unauthorized workspaces and unauthenticated credentials across runtime health, job lookup, and dispatch', async () => {
+    await expect(runtimeHealthMain('unauthorized-external-workspace')).rejects.toThrow(
+      /Unauthorized workspace target/
+    );
+
+    const badJobLookup = await jobStatusMain({
+      jobId: 'wm-job-200',
+      workspace: 'unauthorized-external-workspace',
+    });
+    expect(badJobLookup.found).toBe(false);
+    expect(badJobLookup.status).toBe('UNAUTHORIZED_WORKSPACE');
+
+    const service = new FailClosedLocalWindmillService('VITE_AUTHENTICATED_LOCAL_PROXY', {
+      async probeHealth() {
+        return {
+          reachable: true,
+          workspace: 'uor-offline-foundry',
+          authenticated: false,
+          permissionsValidated: false,
+          registeredRunnables: [
+            'backend/runtime_health.ts',
+            'backend/intake_validate.ts',
+            'backend/job_status.ts',
+          ],
+          registeredFlows: [],
+          wmillContractStatus: 'LOCAL_PROXY_VALIDATED',
+        };
+      },
+      async fetchJobById() {
+        return { ok: false, code: 'NOT_CONNECTED', message: 'not found' };
+      },
+    });
+
+    const health = await service.checkRuntimeHealth();
+    expect(health.authenticated).toBe(false);
+    expect(health.readOnlyHealthVerified).toBe(false);
+
+    const submitRes = await service.submitAuthorizedWorkflow({
+      requestId: 'req-unauth-1',
+      idempotencyKey: 'idem-unauth-1',
+      projectId: calcProject.id,
+      workflowId: calcProject.workflowId,
+      flowPath: 'u/foundry/calculator_verify_flow',
+      flowVersion: '1.0.0',
+      sourceRevision: calcProject.sourceRevision,
+      operatorApproved: true,
+      requestedAt: '2026-03-29T10:00:00.000Z',
+      commandId: 'prismpm_check',
+      projectRelativePath: 'examples/Calculator',
+    });
+    expect(submitRes.ok).toBe(false);
+    if (!submitRes.ok) {
+      expect(submitRes.diagnostic.code).toBe('AUTH_NOT_VALIDATED');
+    }
+  });
+
+  it('3. verifies wmill.contract.ts and refuses dispatch when target flow registration is missing', async () => {
+    const nullCheck = wmillContract.verifyGeneratedWmillContract(null);
+    expect(nullCheck.valid).toBe(false);
+    expect(nullCheck.status).toBe('WMILL_TS_NOT_GENERATED');
+
+    const incompleteCheck = wmillContract.verifyGeneratedWmillContract(wmillContract);
+    expect(incompleteCheck.valid).toBe(false);
+    expect(incompleteCheck.status).toBe('WMILL_CONTRACT_INCOMPLETE');
+
+    const service = new FailClosedLocalWindmillService('VITE_AUTHENTICATED_LOCAL_PROXY', {
+      async probeHealth() {
+        return {
+          reachable: true,
+          workspace: 'uor-offline-foundry',
+          authenticated: true,
+          permissionsValidated: true,
+          registeredRunnables: [
+            'backend/runtime_health.ts',
+            'backend/intake_validate.ts',
+            'backend/job_status.ts',
+          ],
+          registeredFlows: ['u/foundry/other_flow'],
+          wmillContractStatus: 'LOCAL_PROXY_VALIDATED',
+        };
+      },
+      async fetchJobById() {
+        return { ok: false, code: 'NOT_CONNECTED', message: 'not found' };
+      },
+    });
+
+    const health = await service.checkRuntimeHealth();
+    expect(health.readOnlyHealthVerified).toBe(true);
+    expect(health.dispatchEnabled).toBe(true); // A flow exists, but not calculator_verify_flow
+
+    const submitRes = await service.submitAuthorizedWorkflow({
+      requestId: 'req-missing-flow-1',
+      idempotencyKey: 'idem-missing-flow-1',
+      projectId: calcProject.id,
+      workflowId: calcProject.workflowId,
+      flowPath: 'u/foundry/calculator_verify_flow',
+      flowVersion: '1.0.0',
+      sourceRevision: calcProject.sourceRevision,
+      operatorApproved: true,
+      requestedAt: '2026-03-29T10:00:00.000Z',
+      commandId: 'prismpm_check',
+      projectRelativePath: 'examples/Calculator',
+    });
+    expect(submitRes.ok).toBe(false);
+    if (!submitRes.ok) {
+      expect(submitRes.diagnostic.code).toBe('FLOW_UNREGISTERED');
+    }
+  });
+
+  it('4. detects invalid or tampered source-package SHA-256 hashes during runtime handoff and intake validation', async () => {
+    const validManifest = await buildSourcePackageManifest({
+      project: calcProject,
+      workspace: calcProject.authoringWorkspace!,
+      reviewConfirmed: true,
+      reviewSummary: 'Reviewed Calculator source package',
+      targetDestination: 'MAC_STUDIO_UOR_OFFLINE_FOUNDRY',
+    });
+
+    const validHandoff = await validateSourcePackageForRuntimeHandoff({
+      rawOrManifest: validManifest,
+      expectedProject: calcProject,
+      expectedWorkspace: 'uor-offline-foundry',
+    });
+    expect(validHandoff.valid).toBe(true);
+
+    const tamperedManifest = {
+      ...validManifest,
+      files: validManifest.files.map((f, idx) =>
+        idx === 0 ? { ...f, content: `${f.content}\n// tampered` } : f
+      ),
+    };
+
+    const tamperedHandoff = await validateSourcePackageForRuntimeHandoff({
+      rawOrManifest: tamperedManifest,
+      expectedProject: calcProject,
+      expectedWorkspace: 'uor-offline-foundry',
+    });
+    expect(tamperedHandoff.valid).toBe(false);
+    expect(tamperedHandoff.failureCode).toBe('INVALID_SOURCE_PACKAGE_HASH');
+
+    const intakeRes = await intakeValidateMain({
+      projectName: calcProject.name,
+      productFamily: calcProject.productFamily,
+      componentId: 'comp-prism',
+      workflowId: calcProject.workflowId,
+      purpose: calcProject.purpose,
+      declaredInputs: calcProject.declaredInputs,
+      environmentDeclaration: calcProject.environmentDeclaration,
+      sourceRevision: calcProject.sourceRevision,
+      acknowledgeBoundary: true,
+      sourcePackage: {
+        schema: validManifest.schema,
+        packageId: validManifest.packageId,
+        packageClassification: validManifest.packageClassification,
+        isHoloArchive: validManifest.isHoloArchive,
+        reviewConfirmed: validManifest.reviewConfirmed,
+        targetWindmillWorkspace: validManifest.targetWindmillWorkspace,
+        packageDigestSha256: validManifest.packageDigestSha256,
+        expectedPackageDigestSha256: 'deadbeef'.repeat(8),
+        lockfileRefs: validManifest.lockfileRefs,
+        files: validManifest.files.map((f) => ({
+          path: f.path,
+          sha256: f.sha256,
+        })),
+      },
+    });
+    expect(intakeRes.valid).toBe(false);
+    expect(intakeRes.errors.sourcePackageHash).toBeDefined();
+
+    const service = new FailClosedLocalWindmillService('VITE_AUTHENTICATED_LOCAL_PROXY');
+    const dispatchRes = await service.submitAuthorizedWorkflow({
+      requestId: 'req-bad-pkg-hash',
+      idempotencyKey: 'idem-bad-pkg-hash',
+      projectId: calcProject.id,
+      workflowId: calcProject.workflowId,
+      flowPath: 'u/foundry/calculator_verify_flow',
+      flowVersion: '1.0.0',
+      sourceRevision: calcProject.sourceRevision,
+      operatorApproved: true,
+      requestedAt: '2026-03-29T10:00:00.000Z',
+      commandId: 'prismpm_check',
+      projectRelativePath: 'examples/Calculator',
+      sourcePackage: tamperedManifest,
+    });
+    expect(dispatchRes.ok).toBe(false);
+    if (!dispatchRes.ok) {
+      expect(dispatchRes.diagnostic.code).toBe('INVALID_SOURCE_PACKAGE_HASH');
+    }
+  });
+
+  it('5. rejects duplicate and stale out-of-order job status responses in both client watermark tracker and job_status runnable', async () => {
+    const dupSnapshot = {
+      jobId: 'wm-job-300',
+      workspace: 'uor-offline-foundry',
+      flowPath: 'u/foundry/calculator_verify_flow',
+      state: 'RUNNING' as const,
+      sequence: 5,
+      updatedAt: '2026-03-29T10:01:00.000Z',
+      logs: ['Stage RUNNING'],
+    };
+    const dupKey = `${dupSnapshot.jobId}:${dupSnapshot.sequence}:${dupSnapshot.updatedAt}:${dupSnapshot.state}`;
+
+    const runnableDup = await jobStatusMain({
+      jobId: 'wm-job-300',
+      workspace: 'uor-offline-foundry',
+      seenResponseKeys: [dupKey],
+      readOnlyLookup: async () => dupSnapshot,
+    });
+    expect(runnableDup.found).toBe(false);
+    expect(runnableDup.status).toBe('DUPLICATE_JOB_RESPONSE');
+
+    const runnableStale = await jobStatusMain({
+      jobId: 'wm-job-300',
+      workspace: 'uor-offline-foundry',
+      lastKnownSequence: 5,
+      readOnlyLookup: async () => ({
+        ...dupSnapshot,
+        state: 'QUEUED',
+        sequence: 3,
+      }),
+    });
+    expect(runnableStale.found).toBe(false);
+    expect(runnableStale.status).toBe('STALE_JOB_RESPONSE');
+
+    let callIndex = 0;
+    const baseRecord = {
+      jobId: 'wm-job-301',
+      projectId: calcProject.id,
+      workflowId: calcProject.workflowId,
+      workflowName: 'Calculator Verification',
+      flowPath: 'u/foundry/calculator_verify_flow',
+      flowVersion: '1.0.0',
+      sourceRevision: calcProject.sourceRevision,
+      idempotencyKey: 'idem-301',
+      state: 'RUNNING' as const,
+      startedAt: '2026-03-29T10:00:00.000Z',
+      logs: ['Stage RUNNING'],
+      artifactRefs: [],
+      evidenceRefs: [],
+      retryAvailable: false,
+      isSyntheticFixture: false,
+      flowRegisteredInWorkspace: true,
+    };
+
+    const responses = [
+      {
+        ok: true as const,
+        workspace: 'uor-offline-foundry',
+        sequence: 10,
+        updatedAt: '2026-03-29T10:01:00.000Z',
+        record: { ...baseRecord, state: 'COMPLETED' as const },
+      },
+      // Exact duplicate response
+      {
+        ok: true as const,
+        workspace: 'uor-offline-foundry',
+        sequence: 10,
+        updatedAt: '2026-03-29T10:01:00.000Z',
+        record: { ...baseRecord, state: 'COMPLETED' as const },
+      },
+      // Regressed sequence and terminal->non-terminal state regression
+      {
+        ok: true as const,
+        workspace: 'uor-offline-foundry',
+        sequence: 8,
+        updatedAt: '2026-03-29T10:00:30.000Z',
+        record: { ...baseRecord, state: 'RUNNING' as const },
+      },
+    ];
+
+    const service = new FailClosedLocalWindmillService('VITE_AUTHENTICATED_LOCAL_PROXY', {
+      async probeHealth() {
+        return {
+          reachable: true,
+          workspace: 'uor-offline-foundry',
+          authenticated: true,
+          permissionsValidated: true,
+          registeredRunnables: [
+            'backend/runtime_health.ts',
+            'backend/intake_validate.ts',
+            'backend/job_status.ts',
+          ],
+          registeredFlows: ['u/foundry/calculator_verify_flow'],
+          wmillContractStatus: 'LOCAL_PROXY_VALIDATED',
+        };
+      },
+      async fetchJobById() {
+        const res = responses[Math.min(callIndex, responses.length - 1)];
+        callIndex += 1;
+        return res;
+      },
+    });
+
+    await service.checkRuntimeHealth();
+
+    const first = await service.getJobStatusAndResult('wm-job-301');
+    expect(first.ok).toBe(true);
+    if (first.ok) {
+      expect(first.record.state).toBe('COMPLETED');
+    }
+
+    const secondDup = await service.getJobStatusAndResult('wm-job-301');
+    expect(secondDup.ok).toBe(false);
+    if (!secondDup.ok) {
+      expect(secondDup.diagnostic.code).toBe('DUPLICATE_JOB_RESPONSE');
+    }
+
+    const thirdStale = await service.getJobStatusAndResult('wm-job-301');
+    expect(thirdStale.ok).toBe(false);
+    if (!thirdStale.ok) {
+      expect(thirdStale.diagnostic.code).toBe('STALE_JOB_RESPONSE');
+    }
+  });
+
+  it('6. performs authenticated read-only job retrieval when runtime health and workspace are verified', async () => {
+    const service = new FailClosedLocalWindmillService('VITE_AUTHENTICATED_LOCAL_PROXY', {
+      async probeHealth() {
+        return {
+          reachable: true,
+          workspace: 'uor-offline-foundry',
+          authenticated: true,
+          permissionsValidated: true,
+          registeredRunnables: [
+            'backend/runtime_health.ts',
+            'backend/intake_validate.ts',
+            'backend/job_status.ts',
+          ],
+          registeredFlows: ['u/foundry/calculator_verify_flow'],
+          wmillContractStatus: 'LOCAL_PROXY_VALIDATED',
+        };
+      },
+      async fetchJobById(jobId) {
+        return {
+          ok: true,
+          workspace: 'uor-offline-foundry',
+          sequence: 1,
+          updatedAt: '2026-03-29T12:00:00.000Z',
+          record: {
+            jobId,
+            projectId: calcProject.id,
+            workflowId: calcProject.workflowId,
+            workflowName: 'Calculator Intake & Check',
+            flowPath: 'u/foundry/calculator_verify_flow',
+            flowVersion: '1.0.0',
+            sourceRevision: calcProject.sourceRevision,
+            idempotencyKey: 'idem-readonly-ok',
+            state: 'COMPLETED',
+            startedAt: '2026-03-29T11:59:50.000Z',
+            finishedAt: '2026-03-29T12:00:00.000Z',
+            durationMs: 10000,
+            logs: ['prismpm check examples/Calculator -> 0 errors'],
+            structuredResult: { stage: 'CHECK', exitCode: 0 },
+            artifactRefs: [],
+            evidenceRefs: [],
+            retryAvailable: false,
+            isSyntheticFixture: false,
+            flowRegisteredInWorkspace: true,
+          },
+        };
+      },
+      async listJobs() {
+        return {
+          ok: true,
+          workspace: 'uor-offline-foundry',
+          records: [
+            {
+              jobId: 'wm-real-job-running-1',
+              projectId: calcProject.id,
+              workflowId: calcProject.workflowId,
+              workflowName: 'Calculator Build',
+              flowPath: 'f/uor_foundry/prismpm_build_locked',
+              flowVersion: '1.0.0',
+              sourceRevision: calcProject.sourceRevision,
+              idempotencyKey: 'idem-run-1',
+              state: 'RUNNING',
+              startedAt: '2026-03-29T12:01:00.000Z',
+              logs: ['Compiling Core-Wasm guest'],
+              artifactRefs: [],
+              evidenceRefs: [],
+              retryAvailable: false,
+              isSyntheticFixture: false,
+              flowRegisteredInWorkspace: true,
+            },
+            {
+              jobId: 'wm-real-job-built-1',
+              projectId: calcProject.id,
+              workflowId: calcProject.workflowId,
+              workflowName: 'Calculator Build',
+              flowPath: 'f/uor_foundry/prismpm_build_locked',
+              flowVersion: '1.0.0',
+              sourceRevision: calcProject.sourceRevision,
+              idempotencyKey: 'idem-built-1',
+              state: 'COMPLETED',
+              startedAt: '2026-03-29T12:00:00.000Z',
+              finishedAt: '2026-03-29T12:00:40.000Z',
+              logs: ['Produced Calculator.holo'],
+              structuredResult: { stage: 'BUILD', exitCode: 0 },
+              artifactRefs: ['art-prism-calc-holo'],
+              evidenceRefs: [],
+              retryAvailable: false,
+              isSyntheticFixture: false,
+              flowRegisteredInWorkspace: true,
+            },
+            {
+              jobId: 'wm-real-job-verified-1',
+              projectId: calcProject.id,
+              workflowId: calcProject.workflowId,
+              workflowName: 'Calculator Independent Verification',
+              flowPath: 'f/uor_foundry/prismpm_verify',
+              flowVersion: '1.0.0',
+              sourceRevision: calcProject.sourceRevision,
+              idempotencyKey: 'idem-ver-1',
+              state: 'COMPLETED',
+              startedAt: '2026-03-29T12:02:00.000Z',
+              finishedAt: '2026-03-29T12:02:30.000Z',
+              logs: ['15-gate VV passed twice'],
+              structuredResult: { stage: 'VERIFY', exitCode: 0 },
+              artifactRefs: ['art-prism-calc-holo'],
+              evidenceRefs: ['ev-prismpm-vv-1'],
+              retryAvailable: false,
+              isSyntheticFixture: false,
+              flowRegisteredInWorkspace: true,
+            },
+          ],
+        };
+      },
+    });
+
+    const health = await service.checkRuntimeHealth();
+    expect(health.readOnlyHealthVerified).toBe(true);
+    expect(health.dispatchEnabled).toBe(true);
+
+    const lookup = await service.getJobStatusAndResult('wm-real-job-calc-42');
+    expect(lookup.ok).toBe(true);
+    if (lookup.ok) {
+      expect(lookup.record.jobId).toBe('wm-real-job-calc-42');
+      expect(lookup.record.isSyntheticFixture).toBe(false);
+      expect(lookup.record.flowPath).toBe('u/foundry/calculator_verify_flow');
+    }
+
+    const recentRegistry = await service.listApprovedExecutionHistory(calcProject.id);
+    expect(recentRegistry.ok).toBe(true);
+    expect(recentRegistry.records.map((r) => classifyWindmillJobEvidenceStage(r))).toEqual([
+      'RUNNING',
+      'BUILT',
+      'VERIFIED',
+    ]);
+  });
+
+  it('7. refuses production release without independent verification evidence and human release approval across Calculator handoff and 7-state lifecycle', async () => {
+    const manifest = await buildSourcePackageManifest({
+      project: calcProject,
+      workspace: calcProject.authoringWorkspace!,
+      reviewConfirmed: true,
+      reviewSummary: 'Reviewed Calculator source package',
+      targetDestination: 'MAC_STUDIO_UOR_OFFLINE_FOUNDRY',
+    });
+
+    const validation = await validateSourcePackageForRuntimeHandoff({
+      rawOrManifest: manifest,
+      expectedProject: calcProject,
+      expectedWorkspace: 'uor-offline-foundry',
+    });
+    expect(validation.valid).toBe(true);
+
+    const preview = buildCalculatorRuntimeHandoffPreview({
+      project: calcProject,
+      manifest,
+    });
+    expect(preview.readOnlyValidationStages.map((s) => s.stageContractName)).toEqual([
+      'INTAKE',
+      'SPECIFY',
+      'LOCK',
+      'CHECK',
+    ]);
+
+    const localService = new FailClosedLocalWindmillService('VITE_AUTHENTICATED_LOCAL_PROXY');
+    const handoffFlow = await executeCalculatorIntakeHandoffFlow({
+      project: calcProject,
+      rawOrManifest: manifest,
+      operatorConfirmed: true,
+      windmillService: localService,
+      artifacts: INITIAL_ARTIFACTS.filter((a) => a.projectId === calcProject.id),
+      verifications: INITIAL_VERIFICATION_SUITES.filter((v) => v.projectId === calcProject.id),
+      approvals: INITIAL_APPROVALS.filter((a) => a.projectId === calcProject.id),
+    });
+    expect(handoffFlow.ok).toBe(true);
+    expect(handoffFlow.intakeStageResult.sideEffectsExecuted).toBe(false);
+    // Even with a valid source package and completed intake validation, release remains BLOCKED/PREPARED without independent verifier evidence
+    expect(handoffFlow.evidenceLifecycle.currentState).not.toBe('VERIFIED');
+    expect(handoffFlow.evidenceLifecycle.currentState).not.toBe('RELEASE APPROVED');
+    expect(handoffFlow.evidenceLifecycle.releaseEligible).toBe(false);
+
+    // Simulate a genuine BUILT artifact on disk with verified SHA-256, but no independent Lean4/UOR verification
+    const builtOnlyLifecycle = evaluateAuthoritativeEvidenceLifecycle({
+      project: calcProject,
+      health: {
+        mode: 'LOCAL',
+        deploymentOption: 'VITE_AUTHENTICATED_LOCAL_PROXY',
+        workspace: 'uor-offline-foundry',
+        endpoint: '/api/windmill/health -> http://127.0.0.1:8080',
+        reachable: true,
+        authenticated: true,
+        permissionsValidated: true,
+        checkedAt: '2026-03-29T12:00:00.000Z',
+        registeredRunnables: [
+          'backend/runtime_health.ts',
+          'backend/intake_validate.ts',
+          'backend/job_status.ts',
+        ],
+        registeredFlows: ['u/foundry/calculator_verify_flow'],
+        wmillContractStatus: 'LOCAL_PROXY_VALIDATED',
+        readOnlyHealthVerified: true,
+        dispatchEnabled: true,
+        diagnosticMessage: 'Connected',
+      },
+      sourcePackageValidated: true,
+      activeJobRecords: [
+        {
+          jobId: 'wm-real-build-1',
+          projectId: calcProject.id,
+          workflowId: calcProject.workflowId,
+          workflowName: 'Calculator Build',
+          flowPath: 'u/foundry/calculator_verify_flow',
+          flowVersion: '1.0.0',
+          sourceRevision: calcProject.sourceRevision,
+          idempotencyKey: 'idem-build-1',
+          state: 'COMPLETED',
+          startedAt: '2026-03-29T12:00:00.000Z',
+          logs: [],
+          artifactRefs: ['art-prism-calc-holo'],
+          evidenceRefs: [],
+          retryAvailable: false,
+          isSyntheticFixture: false,
+          flowRegisteredInWorkspace: true,
+        },
+      ],
+      artifacts: INITIAL_ARTIFACTS.filter((a) => a.projectId === calcProject.id).map((a) => ({
+        ...a,
+        isSyntheticFixture: false,
+        fileExistsOnDisk: true,
+        sha256Verified: true,
+        artifactState: 'BUILT' as const,
+        originClassification: 'PRODUCTION_ARTIFACT' as const,
+        verificationState: 'PREFLIGHT_CHECKED' as const,
+      })),
+      verifications: INITIAL_VERIFICATION_SUITES.filter((v) => v.projectId === calcProject.id),
+      approvals: INITIAL_APPROVALS.filter((a) => a.projectId === calcProject.id),
+    });
+
+    expect(builtOnlyLifecycle.currentState).toBe('BUILT');
+    expect(builtOnlyLifecycle.releaseEligible).toBe(false);
+    expect(
+      builtOnlyLifecycle.states.find((s) => s.state === 'BUILT')?.satisfied
+    ).toBe(true);
+    expect(
+      builtOnlyLifecycle.states.find((s) => s.state === 'VERIFIED')?.satisfied
+    ).toBe(false);
+    expect(
+      builtOnlyLifecycle.states.find((s) => s.state === 'BLOCKED')?.satisfied
+    ).toBe(true);
+    expect(
+      builtOnlyLifecycle.states.find((s) => s.state === 'RELEASE APPROVED')?.satisfied
+    ).toBe(false);
+  });
+});
+

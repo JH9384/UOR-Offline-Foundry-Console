@@ -16,7 +16,11 @@ import {
   CanonicalCommandId,
   FIXED_WINDMILL_COMMAND_REGISTRY,
 } from '../../adapters/windmillCommandRegistry';
-import { WORKFLOW_CATALOG } from '../../data/seedFoundryData';
+import {
+  AuthoritativeEvidenceStateSummary,
+  evaluateAuthoritativeEvidenceLifecycle,
+} from '../../adapters/windmillExecutionService';
+import { INITIAL_APPROVALS, INITIAL_VERIFICATION_SUITES, WORKFLOW_CATALOG } from '../../data/seedFoundryData';
 import { evaluateProjectOfflineClosure } from '../../services/holoArchiveValidator';
 import {
   ArtifactProvenanceRecord,
@@ -130,6 +134,31 @@ export const BuildModePanel: React.FC<BuildModePanelProps> = ({
   const projectArtifacts = artifacts.filter((a) => a.projectId === project.id);
   const projectJobs = jobRecords.filter((j) => j.projectId === project.id);
 
+  const evidenceLifecycle: AuthoritativeEvidenceStateSummary =
+    evaluateAuthoritativeEvidenceLifecycle({
+      project,
+      health: {
+        mode: 'LOCAL',
+        deploymentOption: 'VITE_AUTHENTICATED_LOCAL_PROXY',
+        workspace: 'uor-offline-foundry',
+        endpoint: '/api/windmill/health -> http://127.0.0.1:8080',
+        reachable: false,
+        authenticated: false,
+        permissionsValidated: false,
+        checkedAt: '',
+        registeredRunnables: [],
+        registeredFlows: [],
+        wmillContractStatus: 'WMILL_TS_NOT_GENERATED',
+        readOnlyHealthVerified: false,
+        dispatchEnabled: false,
+        diagnosticMessage: 'LOCAL mode disconnected',
+      },
+      activeJobRecords: projectJobs,
+      artifacts: projectArtifacts,
+      verifications: INITIAL_VERIFICATION_SUITES.filter((v) => v.projectId === project.id),
+      approvals: INITIAL_APPROVALS.filter((a) => a.projectId === project.id),
+    });
+
   const [selectedStageId, setSelectedStageId] = useState<WorkflowStageId>(
     () => activeRun?.currentStageId ?? 'intake'
   );
@@ -233,6 +262,49 @@ export const BuildModePanel: React.FC<BuildModePanelProps> = ({
           <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
         </button>
       </div>
+
+      {/* Phase C: 7-State Authoritative Evidence Lifecycle Strip */}
+      <section
+        className="bg-[#111827] border border-slate-800/90 rounded-lg px-5 py-3.5 space-y-2.5"
+        data-testid="authoritative-evidence-lifecycle-strip"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-xs">
+            <span className="font-display font-semibold text-slate-100">
+              Authoritative Evidence Lifecycle
+            </span>
+            <StatusTag value={evidenceLifecycle.currentState} />
+            <span className="text-[11px] font-mono text-slate-400">
+              workspace: uor-offline-foundry · mode: {integrationMode}
+            </span>
+          </div>
+          <span className="text-[11px] font-mono text-amber-300">
+            Browser Structural Preflight ≠ Independent Verification
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 text-[11px] font-mono">
+          {evidenceLifecycle.states.map((st) => (
+            <div
+              key={st.state}
+              title={st.evidenceSummary}
+              className={`p-2 rounded border ${
+                st.active
+                  ? 'border-blue-500/60 bg-blue-950/30 text-blue-200'
+                  : st.satisfied
+                    ? 'border-emerald-500/35 bg-emerald-950/20 text-emerald-300'
+                    : 'border-slate-800 bg-[#0B0F17] text-slate-500'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-1">
+                <span className="font-semibold truncate">{st.state}</span>
+                <span>{st.active ? 'ACTIVE' : st.satisfied ? 'OK' : '—'}</span>
+              </div>
+              <div className="text-[10px] text-slate-400 truncate mt-0.5">{st.evidenceSummary}</div>
+            </div>
+          ))}
+        </div>
+      </section>
 
       {subTab === 'pipeline' && (
         <section className="bg-[#111827] border border-slate-800/90 rounded-lg p-5 space-y-5">

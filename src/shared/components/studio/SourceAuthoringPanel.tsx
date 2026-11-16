@@ -17,15 +17,30 @@ import {
   X,
 } from 'lucide-react';
 import {
+  buildCalculatorRuntimeHandoffPreview,
+  buildSourcePackageManifest,
+  CalculatorRuntimeHandoffPreview,
   computeSideBySideDiff,
   detectRestrictedSecretsInText,
   ensureProjectAuthoringWorkspace,
   parseAndVerifySourcePackage,
   runPreliminaryBrowserDiagnostics,
   SOURCE_PACKAGE_SCHEMA,
+  SourcePackageRuntimeHandoffValidationResult,
   tokenizeSourceLine,
   validateDraftFilePath,
+  validateSourcePackageForRuntimeHandoff,
 } from '../../services/sourceAuthoringService';
+import {
+  CalculatorIntakeHandoffResult,
+  executeCalculatorIntakeHandoffFlow,
+  FailClosedLocalWindmillService,
+} from '../../adapters/windmillExecutionService';
+import {
+  INITIAL_APPROVALS,
+  INITIAL_ARTIFACTS,
+  INITIAL_VERIFICATION_SUITES,
+} from '../../data/seedFoundryData';
 import {
   AuthoringSourceFile,
   FoundrySourcePackageManifest,
@@ -135,6 +150,16 @@ export const SourceAuthoringPanel: React.FC<SourceAuthoringPanelProps> = ({
     manifest?: FoundrySourcePackageManifest;
     workspace?: ProjectAuthoringWorkspace;
   } | null>(null);
+
+  // Phase B & C: Source-Package to Runtime Handoff Preview & Read-Only Intake Validation
+  const [handoffPreview, setHandoffPreview] = useState<{
+    manifest: FoundrySourcePackageManifest;
+    preview: CalculatorRuntimeHandoffPreview;
+    validation: SourcePackageRuntimeHandoffValidationResult;
+  } | null>(null);
+  const [handoffOperatorConfirmed, setHandoffOperatorConfirmed] = useState(false);
+  const [handoffFlowResult, setHandoffFlowResult] =
+    useState<CalculatorIntakeHandoffResult | null>(null);
 
   const selectedFile: AuthoringSourceFile | undefined =
     workspace.files.find((f) => f.path === selectedPath) ?? workspace.files[0];
@@ -348,6 +373,56 @@ export const SourceAuthoringPanel: React.FC<SourceAuthoringPanelProps> = ({
       manifest: parsed.manifest,
       workspace: parsed.authoringWorkspace,
     });
+  };
+
+  const handleGenerateHandoffPreview = async () => {
+    try {
+      const manifest = await buildSourcePackageManifest({
+        project,
+        workspace,
+        reviewConfirmed: true,
+        reviewSummary:
+          reviewSummary.trim() ||
+          `Reviewed ${workspace.files.length} source files for ${targetDestination}`,
+        targetDestination,
+      });
+      const validation = await validateSourcePackageForRuntimeHandoff({
+        rawOrManifest: manifest,
+        expectedProject: project,
+        expectedWorkspace: 'uor-offline-foundry',
+      });
+      const preview = buildCalculatorRuntimeHandoffPreview({
+        project,
+        manifest,
+      });
+      setHandoffPreview({
+        manifest,
+        preview,
+        validation,
+      });
+      setHandoffOperatorConfirmed(false);
+      setHandoffFlowResult(null);
+    } catch (err) {
+      setExportStatus({
+        ok: false,
+        message: err instanceof Error ? err.message : 'Unable to build source package for handoff preview.',
+      });
+    }
+  };
+
+  const handleExecuteReadOnlyIntakeFlow = async () => {
+    if (!handoffPreview) return;
+    const localService = new FailClosedLocalWindmillService('VITE_AUTHENTICATED_LOCAL_PROXY');
+    const result = await executeCalculatorIntakeHandoffFlow({
+      project,
+      rawOrManifest: handoffPreview.manifest,
+      operatorConfirmed: handoffOperatorConfirmed,
+      windmillService: localService,
+      artifacts: INITIAL_ARTIFACTS.filter((a) => a.projectId === project.id),
+      verifications: INITIAL_VERIFICATION_SUITES.filter((v) => v.projectId === project.id),
+      approvals: INITIAL_APPROVALS.filter((a) => a.projectId === project.id),
+    });
+    setHandoffFlowResult(result);
   };
 
   return (
@@ -1120,6 +1195,146 @@ export const SourceAuthoringPanel: React.FC<SourceAuthoringPanelProps> = ({
               </div>
             )}
           </div>
+        </div>
+
+        {/* Phase B & C: Source-Package to Runtime Handoff Preview & Read-Only Calculator Intake Flow */}
+        <div
+          className="p-4 bg-[#0B0F17] border border-slate-800 rounded space-y-3 text-xs"
+          data-testid="runtime-handoff-preview-panel"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
+            <div>
+              <div className="font-medium text-slate-100">
+                Source-Package to Runtime Handoff Preview &amp; Read-Only Intake Validation
+              </div>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                Validates manifest schema (<span className="font-mono">{SOURCE_PACKAGE_SCHEMA}</span>), file identities, SHA-256 digests, path safety, operator review, lockfile closure, and toolchain compatibility before dispatching read-only intake stages (`INTAKE`, `SPECIFY`, `LOCK`, `CHECK`).
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleGenerateHandoffPreview}
+              data-testid="generate-handoff-preview-btn"
+              className="px-3 py-1.5 text-xs font-medium text-slate-100 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded whitespace-nowrap"
+            >
+              Preview Runtime Handoff Contract
+            </button>
+          </div>
+
+          {handoffPreview && (
+            <div className="space-y-3" data-testid="handoff-preview-details">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 text-[11px] font-mono">
+                <div className="p-2.5 bg-[#111827] border border-slate-800 rounded">
+                  <div className="text-slate-500">Package Digest (SHA-256)</div>
+                  <div className="text-slate-200 truncate mt-0.5">
+                    {handoffPreview.preview.packageDigestSha256}
+                  </div>
+                </div>
+                <div className="p-2.5 bg-[#111827] border border-slate-800 rounded">
+                  <div className="text-slate-500">Handoff Gate Checks</div>
+                  <div className="text-emerald-300 mt-0.5">
+                    {handoffPreview.validation.valid ? 'ALL 7 GATES VERIFIED' : 'GATE FAILURE'} ·{' '}
+                    {handoffPreview.preview.verifiedFileCount} files ·{' '}
+                    {handoffPreview.preview.lockfileRefs.join(', ')}
+                  </div>
+                </div>
+                <div className="p-2.5 bg-[#111827] border border-slate-800 rounded">
+                  <div className="text-slate-500">Target Windmill Flow</div>
+                  <div className="text-sky-300 mt-0.5">
+                    {handoffPreview.preview.targetWindmillWorkspace} ::{' '}
+                    {handoffPreview.preview.readOnlyValidationStages[0]?.windmillFlowPath}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 text-[11px]">
+                <div className="p-2.5 bg-[#111827] border border-slate-800 rounded space-y-1">
+                  <div className="font-semibold text-slate-200">
+                    Canonical Read-Only Intake Stages (`examples/Calculator`)
+                  </div>
+                  <ul className="space-y-1 font-mono text-slate-300">
+                    {handoffPreview.preview.readOnlyValidationStages.map((s) => (
+                      <li key={s.commandId} className="truncate">
+                        [{s.stageContractName}] {s.commandId} &rarr; {s.validatedArgv.join(' ')}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+
+                <div className="p-2.5 bg-[#111827] border border-slate-800 rounded space-y-1 text-slate-300">
+                  <div className="font-semibold text-slate-200">
+                    4-Layer Epistemic Separation Boundary
+                  </div>
+                  <p>
+                    <strong className="text-slate-200">1. Authored Source:</strong>{' '}
+                    {handoffPreview.preview.separationBoundaries.authoredSourceState}
+                  </p>
+                  <p>
+                    <strong className="text-slate-200">2. Compiled Artifacts:</strong>{' '}
+                    {handoffPreview.preview.separationBoundaries.compiledArtifactState}
+                  </p>
+                  <p>
+                    <strong className="text-slate-200">3. Independent Verifier:</strong>{' '}
+                    {handoffPreview.preview.separationBoundaries.independentVerificationState}
+                  </p>
+                  <p>
+                    <strong className="text-slate-200">4. Release Authorization:</strong>{' '}
+                    {handoffPreview.preview.separationBoundaries.releaseAuthorizationState}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-slate-800">
+                <label className="flex items-center gap-2 cursor-pointer text-[11px] text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={handoffOperatorConfirmed}
+                    onChange={(e) => setHandoffOperatorConfirmed(e.target.checked)}
+                    data-testid="confirm-runtime-handoff-checkbox"
+                    className="rounded border-slate-600 bg-slate-900 text-blue-600"
+                  />
+                  <span>
+                    Confirm explicit operator handoff to read-only intake validation (`uor-offline-foundry`)
+                  </span>
+                </label>
+
+                <button
+                  type="button"
+                  disabled={!handoffOperatorConfirmed || !handoffPreview.validation.valid}
+                  onClick={handleExecuteReadOnlyIntakeFlow}
+                  data-testid="run-calculator-handoff-validation-btn"
+                  className="px-3.5 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-500 rounded whitespace-nowrap"
+                >
+                  Execute Read-Only Intake Validation
+                </button>
+              </div>
+
+              {handoffFlowResult && (
+                <div
+                  data-testid="calculator-handoff-flow-result"
+                  className="p-3 bg-[#111827] border border-slate-700 rounded space-y-2 text-[11px] font-mono"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-slate-200">
+                      Intake Stage: {handoffFlowResult.intakeStageResult.commandId} (sideEffectsExecuted:{' '}
+                      {String(handoffFlowResult.intakeStageResult.sideEffectsExecuted)})
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-slate-400">Authoritative Lifecycle:</span>
+                      <StatusTag value={handoffFlowResult.evidenceLifecycle.currentState} />
+                    </div>
+                  </div>
+                  <div className="text-slate-300">
+                    {handoffFlowResult.intakeStageResult.diagnostic}
+                  </div>
+                  <div className="text-amber-300">
+                    Release Eligible: {String(handoffFlowResult.evidenceLifecycle.releaseEligible)} ·{' '}
+                    {handoffFlowResult.evidenceLifecycle.blockingReasons[0] ?? 'No blockers'}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </section>
     </div>

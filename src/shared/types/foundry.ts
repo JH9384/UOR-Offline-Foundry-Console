@@ -617,6 +617,15 @@ export type WindmillJobState =
   | 'CANCELLED'
   | 'INTERRUPTED';
 
+export type AuthoritativeEvidenceLifecycleState =
+  | 'PREPARED'
+  | 'REGISTERED'
+  | 'RUNNING'
+  | 'BUILT'
+  | 'VERIFIED'
+  | 'BLOCKED'
+  | 'RELEASE APPROVED';
+
 export interface WindmillHealthStatus {
   mode: IntegrationMode;
   deploymentOption: WindmillDeploymentOption;
@@ -627,6 +636,14 @@ export interface WindmillHealthStatus {
   permissionsValidated: boolean;
   checkedAt: string;
   diagnosticMessage: string;
+  registeredRunnables?: string[];
+  registeredFlows?: string[];
+  wmillContractStatus?:
+    | 'WMILL_TS_NOT_GENERATED'
+    | 'WMILL_CONTRACT_VALIDATED'
+    | 'LOCAL_PROXY_VALIDATED';
+  readOnlyHealthVerified?: boolean;
+  dispatchEnabled?: boolean;
 }
 
 export interface WindmillJobIdentity {
@@ -682,11 +699,20 @@ export interface VerifiedEvidenceRef {
   isAuthoritative: boolean;
 }
 
+export type WindmillDiagnosticCode =
+  | 'NOT_CONNECTED'
+  | 'AUTH_NOT_VALIDATED'
+  | 'FLOW_UNREGISTERED'
+  | 'SANDBOX_ISOLATED'
+  | 'INVALID_SOURCE_PACKAGE_HASH'
+  | 'DUPLICATE_JOB_RESPONSE'
+  | 'STALE_JOB_RESPONSE';
+
 export interface WindmillConnectionDiagnostic {
   timestamp: string;
   endpoint: string;
   workspace: string;
-  code: 'NOT_CONNECTED' | 'AUTH_NOT_VALIDATED' | 'FLOW_UNREGISTERED' | 'SANDBOX_ISOLATED';
+  code: WindmillDiagnosticCode;
   message: string;
   browserNavigatorOnline: boolean;
 }

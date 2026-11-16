@@ -1,6 +1,8 @@
 import {
   ApprovalDecisionRecord,
   ArtifactProvenanceRecord,
+  AuthoritativeEvidenceLifecycleState,
+  FoundrySourcePackageManifest,
   IntegrationMode,
   ProjectRecord,
   VerifiedEvidenceRef,
@@ -11,16 +13,28 @@ import {
   WindmillHealthStatus,
   WindmillJobIdentity,
   WindmillJobRecord,
+  WindmillJobState,
 } from '../types/foundry';
 import { WINDMILL_ENDPOINTS, WINDMILL_TARGET_CONFIG } from './windmillAdapter';
 import {
   ALLOWED_WINDMILL_WORKSPACE,
+  buildValidatedCommandArgv,
+  CANONICAL_COMMAND_BY_ID,
   CanonicalCommandId,
   FIXED_WINDMILL_COMMAND_REGISTRY,
   validateFixedRegistryCommand,
 } from './windmillCommandRegistry';
 import { evaluateProjectOfflineClosure } from '../services/holoArchiveValidator';
-import { verificationAuthorityService } from '../services/verificationAuthorityService';
+import {
+  buildCalculatorRuntimeHandoffPreview,
+  CalculatorRuntimeHandoffPreview,
+  SourcePackageRuntimeHandoffValidationResult,
+  validateSourcePackageForRuntimeHandoff,
+} from '../services/sourceAuthoringService';
+import {
+  AuthorityTrustContext,
+  verificationAuthorityService,
+} from '../services/verificationAuthorityService';
 
 /**
  * Layer 4: Windmill Execution Services Interface.
@@ -191,37 +205,251 @@ export class DemoWindmillExecutionService implements WindmillExecutionService {
   }
 }
 
+export const REQUIRED_READONLY_RUNNABLES = [
+  'backend/runtime_health.ts',
+  'backend/intake_validate.ts',
+  'backend/job_status.ts',
+] as const;
+
+export interface WindmillReadOnlyHealthProbeResult {
+  reachable: boolean;
+  workspace: string;
+  authenticated: boolean;
+  permissionsValidated: boolean;
+  registeredRunnables?: string[];
+  registeredFlows?: string[];
+  wmillContractStatus?: WindmillHealthStatus['wmillContractStatus'];
+  diagnosticMessage?: string;
+}
+
+export interface WindmillReadOnlyJobFetchSuccess {
+  ok: true;
+  workspace: string;
+  sequence: number;
+  updatedAt: string;
+  record: WindmillJobRecord;
+}
+
+export interface WindmillReadOnlyJobFetchFailure {
+  ok: false;
+  code: WindmillConnectionDiagnostic['code'];
+  message: string;
+}
+
+export interface WindmillReadOnlyRuntimeTransport {
+  probeHealth(): Promise<WindmillReadOnlyHealthProbeResult>;
+  fetchJobById(
+    jobId: string
+  ): Promise<WindmillReadOnlyJobFetchSuccess | WindmillReadOnlyJobFetchFailure>;
+  listJobs?(
+    projectId?: string
+  ): Promise<
+    | { ok: true; workspace: string; records: WindmillJobRecord[] }
+    | { ok: false; code: WindmillConnectionDiagnostic['code']; message: string }
+  >;
+  fetchVerifiedEvidence?(
+    projectId: string
+  ): Promise<
+    | { ok: true; workspace: string; evidence: VerifiedEvidenceRef[] }
+    | { ok: false; code: WindmillConnectionDiagnostic['code']; message: string }
+  >;
+  dispatchFlow?(
+    request: WindmillExecutionRequest & {
+      commandId?: CanonicalCommandId;
+      validatedArgv?: string[];
+      sourcePackageDigest?: string;
+    }
+  ): Promise<
+    | { ok: true; job: WindmillJobIdentity }
+    | { ok: false; code: WindmillConnectionDiagnostic['code']; message: string }
+  >;
+}
+
 /**
  * Fail-closed structural adapter for Option A (authenticated local backend proxy)
  * and Option B (Windmill-native `wmill.ts` full-code app bindings).
  * Keeps zero credentials in frontend code or browser storage.
+ *
+ * Enforces Phase A rules:
+ * 1) Real read-only runtime health and runnable/flow registration check must succeed before dispatch.
+ * 2) Rejects unreachable runtime, unauthorized workspace/credentials, missing flow registrations,
+ *    invalid source-package hashes, and duplicate or stale out-of-order job responses.
  */
 export class FailClosedLocalWindmillService implements WindmillExecutionService {
   readonly mode: IntegrationMode = 'LOCAL';
   readonly deploymentOption: WindmillDeploymentOption;
   readonly workspace = WINDMILL_TARGET_CONFIG.workspace;
   private readonly submittedIdempotencyKeys = new Set<string>();
+  private readonly jobResponseWatermarks = new Map<
+    string,
+    { sequence: number; updatedAt: string; state: WindmillJobState; responseSignatures: Set<string> }
+  >();
+  private lastHealthStatus: WindmillHealthStatus | null = null;
+  private transport?: WindmillReadOnlyRuntimeTransport;
 
-  constructor(deploymentOption: WindmillDeploymentOption = 'VITE_AUTHENTICATED_LOCAL_PROXY') {
+  constructor(
+    deploymentOption: WindmillDeploymentOption = 'VITE_AUTHENTICATED_LOCAL_PROXY',
+    transport?: WindmillReadOnlyRuntimeTransport
+  ) {
     this.deploymentOption = deploymentOption;
+    this.transport = transport;
+  }
+
+  bindTransport(transport?: WindmillReadOnlyRuntimeTransport): void {
+    this.transport = transport;
+    this.lastHealthStatus = null;
+  }
+
+  getLastVerifiedHealth(): WindmillHealthStatus | null {
+    return this.lastHealthStatus;
   }
 
   async checkRuntimeHealth(): Promise<WindmillHealthStatus> {
-    return {
-      mode: 'LOCAL',
-      deploymentOption: this.deploymentOption,
-      workspace: this.workspace,
-      endpoint:
-        this.deploymentOption === 'WINDMILL_NATIVE_WMILL_TS'
-          ? 'wmill.ts (Windmill Workspace Session)'
-          : '/api/windmill/health -> http://127.0.0.1:8080',
-      reachable: false,
-      authenticated: false,
-      permissionsValidated: false,
-      checkedAt: new Date().toISOString(),
-      diagnosticMessage:
-        'LOCAL mode remains unavailable: endpoint authentication and workspace permissions for "uor-offline-foundry" have not been validated.',
-    };
+    const endpointLabel =
+      this.deploymentOption === 'WINDMILL_NATIVE_WMILL_TS'
+        ? 'wmill.ts (Windmill Workspace Session)'
+        : '/api/windmill/health -> http://127.0.0.1:8080';
+
+    if (!this.transport) {
+      const status: WindmillHealthStatus = {
+        mode: 'LOCAL',
+        deploymentOption: this.deploymentOption,
+        workspace: this.workspace,
+        endpoint: endpointLabel,
+        reachable: false,
+        authenticated: false,
+        permissionsValidated: false,
+        checkedAt: new Date().toISOString(),
+        registeredRunnables: [],
+        registeredFlows: [],
+        wmillContractStatus: 'WMILL_TS_NOT_GENERATED',
+        readOnlyHealthVerified: false,
+        dispatchEnabled: false,
+        diagnosticMessage:
+          'LOCAL mode remains unavailable: endpoint authentication and workspace permissions for "uor-offline-foundry" have not been validated.',
+      };
+      this.lastHealthStatus = status;
+      return status;
+    }
+
+    try {
+      const probe = await this.transport.probeHealth();
+      if (!probe.reachable) {
+        const status: WindmillHealthStatus = {
+          mode: 'LOCAL',
+          deploymentOption: this.deploymentOption,
+          workspace: this.workspace,
+          endpoint: endpointLabel,
+          reachable: false,
+          authenticated: false,
+          permissionsValidated: false,
+          checkedAt: new Date().toISOString(),
+          registeredRunnables: [],
+          registeredFlows: [],
+          wmillContractStatus: probe.wmillContractStatus ?? 'WMILL_TS_NOT_GENERATED',
+          readOnlyHealthVerified: false,
+          dispatchEnabled: false,
+          diagnosticMessage:
+            probe.diagnosticMessage ??
+            'LOCAL Windmill runtime at http://127.0.0.1:8080 is unreachable.',
+        };
+        this.lastHealthStatus = status;
+        return status;
+      }
+
+      if (probe.workspace !== ALLOWED_WINDMILL_WORKSPACE) {
+        const status: WindmillHealthStatus = {
+          mode: 'LOCAL',
+          deploymentOption: this.deploymentOption,
+          workspace: probe.workspace,
+          endpoint: endpointLabel,
+          reachable: true,
+          authenticated: false,
+          permissionsValidated: false,
+          checkedAt: new Date().toISOString(),
+          registeredRunnables: probe.registeredRunnables ?? [],
+          registeredFlows: probe.registeredFlows ?? [],
+          wmillContractStatus: probe.wmillContractStatus,
+          readOnlyHealthVerified: false,
+          dispatchEnabled: false,
+          diagnosticMessage: `Refused unauthorized Windmill workspace "${probe.workspace}". Only "${ALLOWED_WINDMILL_WORKSPACE}" is permitted.`,
+        };
+        this.lastHealthStatus = status;
+        return status;
+      }
+
+      if (!probe.authenticated || !probe.permissionsValidated) {
+        const status: WindmillHealthStatus = {
+          mode: 'LOCAL',
+          deploymentOption: this.deploymentOption,
+          workspace: this.workspace,
+          endpoint: endpointLabel,
+          reachable: true,
+          authenticated: Boolean(probe.authenticated),
+          permissionsValidated: Boolean(probe.permissionsValidated),
+          checkedAt: new Date().toISOString(),
+          registeredRunnables: probe.registeredRunnables ?? [],
+          registeredFlows: probe.registeredFlows ?? [],
+          wmillContractStatus: probe.wmillContractStatus,
+          readOnlyHealthVerified: false,
+          dispatchEnabled: false,
+          diagnosticMessage:
+            probe.diagnosticMessage ??
+            `Windmill credentials or workspace RBAC permissions for "${ALLOWED_WINDMILL_WORKSPACE}" failed validation.`,
+        };
+        this.lastHealthStatus = status;
+        return status;
+      }
+
+      const registeredRunnables = probe.registeredRunnables ?? [];
+      const registeredFlows = probe.registeredFlows ?? [];
+      const hasReadOnlyRunnables = REQUIRED_READONLY_RUNNABLES.every((r) =>
+        registeredRunnables.includes(r)
+      );
+
+      const status: WindmillHealthStatus = {
+        mode: 'LOCAL',
+        deploymentOption: this.deploymentOption,
+        workspace: this.workspace,
+        endpoint: endpointLabel,
+        reachable: true,
+        authenticated: true,
+        permissionsValidated: true,
+        checkedAt: new Date().toISOString(),
+        registeredRunnables,
+        registeredFlows,
+        wmillContractStatus:
+          probe.wmillContractStatus ??
+          (this.deploymentOption === 'WINDMILL_NATIVE_WMILL_TS'
+            ? 'WMILL_CONTRACT_VALIDATED'
+            : 'LOCAL_PROXY_VALIDATED'),
+        readOnlyHealthVerified: hasReadOnlyRunnables,
+        dispatchEnabled: hasReadOnlyRunnables && registeredFlows.length > 0,
+        diagnosticMessage:
+          probe.diagnosticMessage ??
+          `Authenticated LOCAL connection to "${this.workspace}" verified (${registeredRunnables.length} runnable(s), ${registeredFlows.length} flow(s) registered).`,
+      };
+      this.lastHealthStatus = status;
+      return status;
+    } catch (err) {
+      const status: WindmillHealthStatus = {
+        mode: 'LOCAL',
+        deploymentOption: this.deploymentOption,
+        workspace: this.workspace,
+        endpoint: endpointLabel,
+        reachable: false,
+        authenticated: false,
+        permissionsValidated: false,
+        checkedAt: new Date().toISOString(),
+        registeredRunnables: [],
+        registeredFlows: [],
+        readOnlyHealthVerified: false,
+        dispatchEnabled: false,
+        diagnosticMessage: `Windmill health probe error: ${err instanceof Error ? err.message : String(err)}`,
+      };
+      this.lastHealthStatus = status;
+      return status;
+    }
   }
 
   async submitAuthorizedWorkflow(
@@ -229,8 +457,11 @@ export class FailClosedLocalWindmillService implements WindmillExecutionService 
       commandId?: string;
       rawCommandString?: string;
       projectRelativePath?: string;
+      sourcePackage?: string | FoundrySourcePackageManifest;
     }
   ): Promise<{ ok: true; job: WindmillJobIdentity } | { ok: false; diagnostic: WindmillConnectionDiagnostic }> {
+    let validatedArgv: string[] | undefined;
+
     if (request.rawCommandString || request.commandId) {
       const cmdCheck = validateFixedRegistryCommand({
         commandId: request.commandId,
@@ -242,6 +473,25 @@ export class FailClosedLocalWindmillService implements WindmillExecutionService 
         return {
           ok: false,
           diagnostic: this.reportConnectionFailure('SANDBOX_ISOLATED', cmdCheck.reason),
+        };
+      }
+      validatedArgv = cmdCheck.validatedArgv;
+    }
+
+    if (request.sourcePackage !== undefined) {
+      const pkgValidation = await validateSourcePackageForRuntimeHandoff({
+        rawOrManifest: request.sourcePackage,
+        expectedWorkspace: this.workspace,
+      });
+      if (!pkgValidation.valid) {
+        return {
+          ok: false,
+          diagnostic: this.reportConnectionFailure(
+            pkgValidation.failureCode === 'WORKSPACE_MISMATCH'
+              ? 'AUTH_NOT_VALIDATED'
+              : 'INVALID_SOURCE_PACKAGE_HASH',
+            `Refused source-package handoff: ${pkgValidation.errors.join('; ')}`
+          ),
         };
       }
     }
@@ -256,44 +506,274 @@ export class FailClosedLocalWindmillService implements WindmillExecutionService 
       };
     }
 
+    if (!this.transport) {
+      return {
+        ok: false,
+        diagnostic: this.reportConnectionFailure(
+          'AUTH_NOT_VALIDATED',
+          `Cannot submit "${request.flowPath}": LOCAL Windmill backend authentication and flow registration are not validated.`
+        ),
+      };
+    }
+
+    // Require read-only runtime health to be verified before enabling dispatch
+    const health = this.lastHealthStatus ?? (await this.checkRuntimeHealth());
+    if (!health.reachable) {
+      return {
+        ok: false,
+        diagnostic: this.reportConnectionFailure(
+          'NOT_CONNECTED',
+          `Cannot submit "${request.flowPath}": Windmill runtime is unreachable.`
+        ),
+      };
+    }
+    if (
+      health.workspace !== ALLOWED_WINDMILL_WORKSPACE ||
+      !health.authenticated ||
+      !health.permissionsValidated
+    ) {
+      return {
+        ok: false,
+        diagnostic: this.reportConnectionFailure(
+          'AUTH_NOT_VALIDATED',
+          health.diagnosticMessage ||
+            `Cannot submit "${request.flowPath}": workspace or credentials not validated.`
+        ),
+      };
+    }
+
+    const registeredFlows = health.registeredFlows ?? [];
+    if (!registeredFlows.includes(request.flowPath)) {
+      return {
+        ok: false,
+        diagnostic: this.reportConnectionFailure(
+          'FLOW_UNREGISTERED',
+          `Refused dispatch: Windmill flow "${request.flowPath}" is not registered in workspace "${this.workspace}".`
+        ),
+      };
+    }
+
+    if (!request.operatorApproved) {
+      return {
+        ok: false,
+        diagnostic: this.reportConnectionFailure(
+          'AUTH_NOT_VALIDATED',
+          `Refused dispatch for "${request.flowPath}": explicit human operator approval is required.`
+        ),
+      };
+    }
+
+    if (typeof this.transport.dispatchFlow !== 'function') {
+      return {
+        ok: false,
+        diagnostic: this.reportConnectionFailure(
+          'FLOW_UNREGISTERED',
+          `Read-only connection verified for "${this.workspace}", but workflow dispatch binding is not enabled on this transport.`
+        ),
+      };
+    }
+
+    const dispatchRes = await this.transport.dispatchFlow({
+      ...request,
+      commandId: request.commandId as CanonicalCommandId | undefined,
+      validatedArgv,
+    });
+    if (!dispatchRes.ok) {
+      return {
+        ok: false,
+        diagnostic: this.reportConnectionFailure(dispatchRes.code, dispatchRes.message),
+      };
+    }
+
+    this.submittedIdempotencyKeys.add(request.idempotencyKey);
     return {
-      ok: false,
-      diagnostic: this.reportConnectionFailure(
-        'AUTH_NOT_VALIDATED',
-        `Cannot submit "${request.flowPath}": LOCAL Windmill backend authentication and flow registration are not validated.`
-      ),
+      ok: true,
+      job: dispatchRes.job,
     };
   }
 
-  async getJobStatusAndResult(jobId: string) {
+  async getJobStatusAndResult(
+    jobId: string
+  ): Promise<{ ok: true; record: WindmillJobRecord } | { ok: false; diagnostic: WindmillConnectionDiagnostic }> {
+    if (!this.transport) {
+      return {
+        ok: false as const,
+        diagnostic: this.reportConnectionFailure(
+          'NOT_CONNECTED',
+          `Cannot query Windmill job "${jobId}" because LOCAL runtime is unvalidated.`
+        ),
+      };
+    }
+
+    const health = this.lastHealthStatus ?? (await this.checkRuntimeHealth());
+    if (!health.reachable) {
+      return {
+        ok: false as const,
+        diagnostic: this.reportConnectionFailure(
+          'NOT_CONNECTED',
+          `Cannot retrieve job "${jobId}": Windmill runtime is unreachable.`
+        ),
+      };
+    }
+    if (
+      health.workspace !== ALLOWED_WINDMILL_WORKSPACE ||
+      !health.authenticated ||
+      !health.permissionsValidated
+    ) {
+      return {
+        ok: false as const,
+        diagnostic: this.reportConnectionFailure(
+          'AUTH_NOT_VALIDATED',
+          `Cannot retrieve job "${jobId}": unauthorized workspace or invalid credentials.`
+        ),
+      };
+    }
+
+    const res = await this.transport.fetchJobById(jobId);
+    if (!res.ok) {
+      return {
+        ok: false as const,
+        diagnostic: this.reportConnectionFailure(res.code, res.message),
+      };
+    }
+
+    if (res.workspace !== ALLOWED_WINDMILL_WORKSPACE) {
+      return {
+        ok: false as const,
+        diagnostic: this.reportConnectionFailure(
+          'AUTH_NOT_VALIDATED',
+          `Refused job response from unauthorized workspace "${res.workspace}".`
+        ),
+      };
+    }
+
+    const sig = `${res.record.jobId}:${res.sequence}:${res.updatedAt}:${res.record.state}`;
+    const prev = this.jobResponseWatermarks.get(jobId);
+    if (prev) {
+      if (prev.responseSignatures.has(sig)) {
+        return {
+          ok: false as const,
+          diagnostic: this.reportConnectionFailure(
+            'DUPLICATE_JOB_RESPONSE',
+            `Rejected duplicate job response (${sig}) for job "${jobId}".`
+          ),
+        };
+      }
+      const prevTs = Date.parse(prev.updatedAt);
+      const nextTs = Date.parse(res.updatedAt);
+      const isTerminalState =
+        prev.state === 'COMPLETED' || prev.state === 'FAILED' || prev.state === 'CANCELLED';
+      const regressedFromTerminal =
+        isTerminalState && (res.record.state === 'QUEUED' || res.record.state === 'RUNNING');
+
+      if (
+        res.sequence < prev.sequence ||
+        (!Number.isNaN(prevTs) && !Number.isNaN(nextTs) && nextTs < prevTs) ||
+        regressedFromTerminal
+      ) {
+        return {
+          ok: false as const,
+          diagnostic: this.reportConnectionFailure(
+            'STALE_JOB_RESPONSE',
+            `Rejected stale or regressed job response for "${jobId}" (seq ${res.sequence} @ ${res.updatedAt} after seq ${prev.sequence} @ ${prev.updatedAt}).`
+          ),
+        };
+      }
+      prev.sequence = res.sequence;
+      prev.updatedAt = res.updatedAt;
+      prev.state = res.record.state;
+      prev.responseSignatures.add(sig);
+    } else {
+      this.jobResponseWatermarks.set(jobId, {
+        sequence: res.sequence,
+        updatedAt: res.updatedAt,
+        state: res.record.state,
+        responseSignatures: new Set([sig]),
+      });
+    }
+
     return {
-      ok: false as const,
-      diagnostic: this.reportConnectionFailure(
-        'NOT_CONNECTED',
-        `Cannot query Windmill job "${jobId}" because LOCAL runtime is unvalidated.`
-      ),
+      ok: true,
+      record: {
+        ...res.record,
+        isSyntheticFixture: false,
+      },
     };
   }
 
-  async listApprovedExecutionHistory() {
+  async listApprovedExecutionHistory(projectId?: string) {
+    if (!this.transport || typeof this.transport.listJobs !== 'function') {
+      return {
+        ok: false,
+        records: [] as WindmillJobRecord[],
+        diagnostic: this.reportConnectionFailure(
+          'NOT_CONNECTED',
+          'No approved live Windmill execution history available while LOCAL runtime is disconnected.'
+        ),
+      };
+    }
+
+    const health = this.lastHealthStatus ?? (await this.checkRuntimeHealth());
+    if (!health.reachable || !health.authenticated || !health.permissionsValidated) {
+      return {
+        ok: false,
+        records: [] as WindmillJobRecord[],
+        diagnostic: this.reportConnectionFailure(
+          health.reachable ? 'AUTH_NOT_VALIDATED' : 'NOT_CONNECTED',
+          health.diagnosticMessage
+        ),
+      };
+    }
+
+    const res = await this.transport.listJobs(projectId);
+    if (!res.ok) {
+      return {
+        ok: false,
+        records: [] as WindmillJobRecord[],
+        diagnostic: this.reportConnectionFailure(res.code, res.message),
+      };
+    }
     return {
-      ok: false,
-      records: [],
-      diagnostic: this.reportConnectionFailure(
-        'NOT_CONNECTED',
-        'No approved live Windmill execution history available while LOCAL runtime is disconnected.'
-      ),
+      ok: true,
+      records: res.records.map((r) => ({ ...r, isSyntheticFixture: false })),
     };
   }
 
-  async readVerifiedEvidenceRefs() {
+  async readVerifiedEvidenceRefs(projectId: string) {
+    if (!this.transport || typeof this.transport.fetchVerifiedEvidence !== 'function') {
+      return {
+        ok: false,
+        evidence: [] as VerifiedEvidenceRef[],
+        diagnostic: this.reportConnectionFailure(
+          'NOT_CONNECTED',
+          'Authoritative Windmill evidence store is unreachable.'
+        ),
+      };
+    }
+
+    const health = this.lastHealthStatus ?? (await this.checkRuntimeHealth());
+    if (!health.reachable || !health.authenticated || !health.permissionsValidated) {
+      return {
+        ok: false,
+        evidence: [] as VerifiedEvidenceRef[],
+        diagnostic: this.reportConnectionFailure(
+          health.reachable ? 'AUTH_NOT_VALIDATED' : 'NOT_CONNECTED',
+          health.diagnosticMessage
+        ),
+      };
+    }
+
+    const res = await this.transport.fetchVerifiedEvidence(projectId);
+    if (!res.ok) {
+      return {
+        ok: false,
+        evidence: [] as VerifiedEvidenceRef[],
+        diagnostic: this.reportConnectionFailure(res.code, res.message),
+      };
+    }
     return {
-      ok: false,
-      evidence: [],
-      diagnostic: this.reportConnectionFailure(
-        'NOT_CONNECTED',
-        'Authoritative Windmill evidence store is unreachable.'
-      ),
+      ok: true,
+      evidence: res.evidence,
     };
   }
 
@@ -705,4 +1185,329 @@ export async function executeGovernedWorkflowContract(params: {
   };
 }
 
+export interface AuthoritativeEvidenceStateSummary {
+  currentState: AuthoritativeEvidenceLifecycleState;
+  states: Array<{
+    state: AuthoritativeEvidenceLifecycleState;
+    satisfied: boolean;
+    active: boolean;
+    evidenceSummary: string;
+  }>;
+  releaseEligible: boolean;
+  blockingReasons: string[];
+}
 
+/**
+ * Phase C.3, C.4, C.5: Evaluates the 7 authoritative lifecycle states
+ * (`PREPARED`, `REGISTERED`, `RUNNING`, `BUILT`, `VERIFIED`, `BLOCKED`, `RELEASE APPROVED`)
+ * strictly from authoritative runtime, artifact, verifier, and human governance records.
+ * Browser structural preflight, AI responses, and simulated runs never satisfy `VERIFIED` or `RELEASE APPROVED`.
+ */
+export function evaluateAuthoritativeEvidenceLifecycle(params: {
+  project: ProjectRecord;
+  health?: WindmillHealthStatus | null;
+  sourcePackageValidated?: boolean;
+  activeJobRecords?: WindmillJobRecord[];
+  artifacts: ArtifactProvenanceRecord[];
+  verifications: VerificationSuiteRecord[];
+  approvals: ApprovalDecisionRecord[];
+  trustContext?: AuthorityTrustContext;
+}): AuthoritativeEvidenceStateSummary {
+  const authEval = verificationAuthorityService.evaluateProjectAuthority(
+    {
+      project: params.project,
+      verifications: params.verifications,
+      artifacts: params.artifacts,
+      approvals: params.approvals,
+    },
+    params.trustContext
+  );
+
+  const projectArtifacts = params.artifacts.filter((a) => a.projectId === params.project.id);
+  const realJobs = (params.activeJobRecords ?? []).filter(
+    (j) => j.projectId === params.project.id && !j.isSyntheticFixture
+  );
+
+  const isPrepared = Boolean(
+    params.sourcePackageValidated ||
+      params.project.authoringWorkspace?.reviewStatus === 'OPERATOR_REVIEWED_FOR_HANDOFF' ||
+      params.project.authoringWorkspace?.files.length
+  );
+
+  const isRegistered = Boolean(
+    params.health?.reachable &&
+      params.health?.authenticated &&
+      params.health?.permissionsValidated &&
+      (params.health?.registeredFlows?.length ?? 0) > 0
+  );
+
+  const isRunning = realJobs.some((j) => j.state === 'RUNNING' || j.state === 'QUEUED');
+
+  // Browser PREFLIGHT_CHECKED / synthetic fixtures never count as genuine Mac Studio BUILT outputs
+  const isBuilt = projectArtifacts.some(
+    (a) =>
+      !a.isSyntheticFixture &&
+      a.fileExistsOnDisk === true &&
+      a.sha256Verified === true &&
+      (a.artifactState === 'BUILT' || a.artifactState === 'VERIFIED')
+  );
+
+  const isVerified = authEval.overallVerificationState === 'VERIFIED';
+  const isReleaseApproved = authEval.releaseEligible;
+  const isBlocked = !isReleaseApproved;
+
+  let currentState: AuthoritativeEvidenceLifecycleState = 'BLOCKED';
+  if (isReleaseApproved) {
+    currentState = 'RELEASE APPROVED';
+  } else if (isVerified) {
+    currentState = 'VERIFIED';
+  } else if (isBuilt) {
+    currentState = 'BUILT';
+  } else if (isRunning) {
+    currentState = 'RUNNING';
+  } else if (isRegistered) {
+    currentState = 'REGISTERED';
+  } else if (isPrepared) {
+    currentState = 'PREPARED';
+  }
+
+  return {
+    currentState,
+    states: [
+      {
+        state: 'PREPARED',
+        satisfied: isPrepared,
+        active: currentState === 'PREPARED',
+        evidenceSummary: isPrepared
+          ? 'Authored source package & canonical Windmill manifests prepared locally.'
+          : 'Awaiting authored source package preparation.',
+      },
+      {
+        state: 'REGISTERED',
+        satisfied: isRegistered,
+        active: currentState === 'REGISTERED',
+        evidenceSummary: isRegistered
+          ? `Authenticated workspace "${params.health?.workspace}" with ${params.health?.registeredFlows?.length ?? 0} registered flow(s).`
+          : 'Windmill flows/runnables not yet verified as registered in live workspace.',
+      },
+      {
+        state: 'RUNNING',
+        satisfied: isRunning,
+        active: currentState === 'RUNNING',
+        evidenceSummary: isRunning
+          ? `Genuine Windmill job executing (${realJobs.find((j) => j.state === 'RUNNING' || j.state === 'QUEUED')?.jobId}).`
+          : 'No active live Windmill job running.',
+      },
+      {
+        state: 'BUILT',
+        satisfied: isBuilt,
+        active: currentState === 'BUILT',
+        evidenceSummary: isBuilt
+          ? 'On-disk compiler artifact produced with verified SHA-256 (distinct from verification).'
+          : 'No real on-disk compiler artifact produced yet (browser preflight is not a build).',
+      },
+      {
+        state: 'VERIFIED',
+        satisfied: isVerified,
+        active: currentState === 'VERIFIED',
+        evidenceSummary: isVerified
+          ? `All ${authEval.requiredSuiteCount} independent verification authorities authenticated PASS.`
+          : `NOT VERIFIED (${authEval.authenticatedPassCount}/${authEval.requiredSuiteCount} authenticated authorities; browser preflight never certifies verification).`,
+      },
+      {
+        state: 'BLOCKED',
+        satisfied: isBlocked,
+        active: isBlocked && currentState !== 'RELEASE APPROVED',
+        evidenceSummary: isBlocked
+          ? authEval.blockingReasons[0] ?? 'Release blocked pending independent verification and human authorization.'
+          : 'All release blockers cleared.',
+      },
+      {
+        state: 'RELEASE APPROVED',
+        satisfied: isReleaseApproved,
+        active: currentState === 'RELEASE APPROVED',
+        evidenceSummary: isReleaseApproved
+          ? 'Authenticated human APPROVED_FOR_RELEASE bound to verified artifact SHA-256 and revision.'
+          : 'Refused: requires authenticated independent verification evidence + human APPROVED_FOR_RELEASE.',
+      },
+    ],
+    releaseEligible: isReleaseApproved,
+    blockingReasons: authEval.blockingReasons,
+  };
+}
+
+export interface CalculatorIntakeHandoffResult {
+  ok: boolean;
+  operatorConfirmed: boolean;
+  packageValidation: SourcePackageRuntimeHandoffValidationResult;
+  handoffPreview?: CalculatorRuntimeHandoffPreview;
+  healthStatus: WindmillHealthStatus;
+  intakeStageResult: {
+    commandId: 'prism_intake_validate';
+    flowPath: 'f/uor_foundry/prism_intake_validate';
+    runnable: 'backend/intake_validate.ts';
+    validatedArgv: string[];
+    valid: boolean;
+    sideEffectsExecuted: false;
+    jobId: string | null;
+    diagnostic: string;
+  };
+  evidenceLifecycle: AuthoritativeEvidenceStateSummary;
+}
+
+/**
+ * Phase B.4: Executes the real Calculator (`proj-prism-calc` / `examples/Calculator`)
+ * intake and read-only validation flow using `uor.foundry.source-package.v1` and the
+ * canonical Windmill workflow structure without fabricating compiler output or release acceptance.
+ */
+export async function executeCalculatorIntakeHandoffFlow(params: {
+  project: ProjectRecord;
+  rawOrManifest: string | FoundrySourcePackageManifest;
+  operatorConfirmed: boolean;
+  windmillService: WindmillExecutionService;
+  artifacts: ArtifactProvenanceRecord[];
+  verifications: VerificationSuiteRecord[];
+  approvals: ApprovalDecisionRecord[];
+  activeJobRecords?: WindmillJobRecord[];
+  trustContext?: AuthorityTrustContext;
+}): Promise<CalculatorIntakeHandoffResult> {
+  const healthStatus = await params.windmillService.checkRuntimeHealth();
+  const intakeEntry = CANONICAL_COMMAND_BY_ID.prism_intake_validate;
+  const relPath =
+    params.project.id === 'proj-prism-calc' ? 'examples/Calculator' : `projects/${params.project.id}`;
+  const validatedArgv = buildValidatedCommandArgv(intakeEntry, relPath);
+
+  const packageValidation = await validateSourcePackageForRuntimeHandoff({
+    rawOrManifest: params.rawOrManifest,
+    expectedProject: params.project,
+    expectedWorkspace: ALLOWED_WINDMILL_WORKSPACE,
+  });
+
+  const evidenceLifecycle = evaluateAuthoritativeEvidenceLifecycle({
+    project: params.project,
+    health: healthStatus,
+    sourcePackageValidated: packageValidation.valid && params.operatorConfirmed,
+    activeJobRecords: params.activeJobRecords,
+    artifacts: params.artifacts,
+    verifications: params.verifications,
+    approvals: params.approvals,
+    trustContext: params.trustContext,
+  });
+
+  if (!params.operatorConfirmed) {
+    return {
+      ok: false,
+      operatorConfirmed: false,
+      packageValidation,
+      healthStatus,
+      intakeStageResult: {
+        commandId: 'prism_intake_validate',
+        flowPath: 'f/uor_foundry/prism_intake_validate',
+        runnable: 'backend/intake_validate.ts',
+        validatedArgv,
+        valid: false,
+        sideEffectsExecuted: false,
+        jobId: null,
+        diagnostic: 'Handoff refused: explicit operator confirmation is required after reviewing the handoff preview.',
+      },
+      evidenceLifecycle,
+    };
+  }
+
+  if (!packageValidation.valid || !packageValidation.manifest) {
+    return {
+      ok: false,
+      operatorConfirmed: true,
+      packageValidation,
+      healthStatus,
+      intakeStageResult: {
+        commandId: 'prism_intake_validate',
+        flowPath: 'f/uor_foundry/prism_intake_validate',
+        runnable: 'backend/intake_validate.ts',
+        validatedArgv,
+        valid: false,
+        sideEffectsExecuted: false,
+        jobId: null,
+        diagnostic: `Source package validation failed (${packageValidation.failureCode ?? 'INVALID'}): ${packageValidation.errors.join('; ')}`,
+      },
+      evidenceLifecycle,
+    };
+  }
+
+  const handoffPreview = buildCalculatorRuntimeHandoffPreview({
+    project: params.project,
+    manifest: packageValidation.manifest,
+    projectRelativePath: relPath,
+  });
+
+  // Attempt read-only intake submission through the Windmill service boundary
+  const idempotencyKey = `calc-intake:${params.project.id}:${packageValidation.manifest.packageDigestSha256.slice(0, 16)}`;
+  const dispatchAttempt = await params.windmillService.submitAuthorizedWorkflow({
+    requestId: `req-intake-${params.project.id}`,
+    idempotencyKey,
+    projectId: params.project.id,
+    workflowId: params.project.workflowId,
+    flowPath: 'f/uor_foundry/prism_intake_validate',
+    flowVersion: params.project.sourceRevision,
+    sourceRevision: params.project.sourceRevision,
+    operatorApproved: true,
+    requestedAt: new Date().toISOString(),
+  });
+
+  const jobId = dispatchAttempt.ok ? dispatchAttempt.job.jobId : null;
+  const diagnostic = dispatchAttempt.ok
+    ? `Calculator source package (${packageValidation.verifiedFileCount} files, sha256:${packageValidation.manifest.packageDigestSha256.slice(0, 12)}...) validated and submitted to registered flow f/uor_foundry/prism_intake_validate (jobId: ${dispatchAttempt.job.jobId}). Release remains ${evidenceLifecycle.releaseEligible ? 'ELIGIBLE' : 'BLOCKED'}.`
+    : `Calculator source package (${packageValidation.verifiedFileCount} files, sha256:${packageValidation.manifest.packageDigestSha256.slice(0, 12)}...) passed read-only schema, hash, path, review, and toolchain validation. Live Windmill dispatch status: [${dispatchAttempt.diagnostic.code}] ${dispatchAttempt.diagnostic.message}`;
+
+  return {
+    ok: true,
+    operatorConfirmed: true,
+    packageValidation,
+    handoffPreview,
+    healthStatus,
+    intakeStageResult: {
+      commandId: 'prism_intake_validate',
+      flowPath: 'f/uor_foundry/prism_intake_validate',
+      runnable: 'backend/intake_validate.ts',
+      validatedArgv,
+      valid: true,
+      sideEffectsExecuted: false,
+      jobId,
+      diagnostic,
+    },
+    evidenceLifecycle,
+  };
+}
+
+export type RecentJobRegistryState = 'RUNNING' | 'BUILT' | 'VERIFIED' | 'BLOCKED';
+
+/**
+ * Classifies a retrieved Windmill job record into its authoritative evidence stage
+ * ('RUNNING', 'BUILT', 'VERIFIED', or 'BLOCKED') for the Advanced Console Recent Job Registry.
+ * Synthetic fixtures or non-completed jobs never qualify as 'BUILT' or 'VERIFIED'.
+ */
+export function classifyWindmillJobEvidenceStage(
+  job: WindmillJobRecord
+): RecentJobRegistryState {
+  if (job.state === 'RUNNING' || job.state === 'QUEUED') {
+    return 'RUNNING';
+  }
+  if (job.isSyntheticFixture || job.state !== 'COMPLETED') {
+    return 'BLOCKED';
+  }
+  const stageTag = String(job.structuredResult?.stage ?? '').toUpperCase();
+  if (
+    job.evidenceRefs.length > 0 &&
+    (job.flowPath.toLowerCase().includes('verify') || stageTag === 'VERIFY')
+  ) {
+    return 'VERIFIED';
+  }
+  if (
+    job.artifactRefs.length > 0 ||
+    job.flowPath.toLowerCase().includes('build') ||
+    stageTag === 'BUILD'
+  ) {
+    return 'BUILT';
+  }
+  return 'BLOCKED';
+}

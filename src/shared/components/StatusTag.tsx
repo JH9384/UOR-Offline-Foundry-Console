@@ -14,6 +14,7 @@ import {
   ArtifactLifecycleBadge,
   ArtifactLifecycleState,
   ArtifactPreviewStatus,
+  AuthoritativeEvidenceLifecycleState,
   ConnectionStatus,
   DraftProposalStatus,
   EpistemicCondition,
@@ -39,6 +40,7 @@ type StatusValue =
   | ArtifactPreviewStatus
   | WindmillJobState
   | DraftProposalStatus
+  | AuthoritativeEvidenceLifecycleState
   | 'CANDIDATE'
   | 'STALE'
   | 'QUEUED'
@@ -65,6 +67,7 @@ export const StatusTag: React.FC<StatusTagProps> = ({ value, className = '' }) =
     case 'APPROVED_FOR_TEST_SIMULATION':
     case 'APPROVED_FOR_QUALIFICATION':
     case 'APPROVED_FOR_RELEASE':
+    case 'RELEASE APPROVED':
     case 'Validated':
     case 'VERIFIED':
     case 'APPROVED':
@@ -79,6 +82,8 @@ export const StatusTag: React.FC<StatusTagProps> = ({ value, className = '' }) =
       break;
     case 'STRUCTURAL PREFLIGHT PASS':
     case 'PREFLIGHT_CHECKED':
+    case 'PREPARED':
+    case 'REGISTERED':
     case 'CANDIDATE':
       colorClasses = 'border-sky-500/35 bg-sky-950/45 text-sky-300';
       Icon = Clock;

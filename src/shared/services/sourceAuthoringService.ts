@@ -1,5 +1,14 @@
-import { computeSha256Hex } from './holoArchiveValidator';
+import { computeSha256Hex, evaluateProjectOfflineClosure } from './holoArchiveValidator';
 import { scrubSensitiveExportText } from './durableLocalStore';
+import {
+  ALLOWED_WINDMILL_WORKSPACE,
+  buildValidatedCommandArgv,
+  CANONICAL_COMMAND_BY_ID,
+} from '../adapters/windmillCommandRegistry';
+import {
+  CANONICAL_TOOLCHAIN_PIN_MAP,
+  HISTORICAL_INVALID_PINS,
+} from '../data/toolchainPinManifest';
 import {
   AiSourceProposal,
   AuthoringFileKind,
@@ -1419,3 +1428,266 @@ export function buildStructuredInputManifestPreview(params: {
       'Produces editable draft inputs only. Zero formal theorem proofs, binary .holo builds, or release approvals are fabricated.',
   };
 }
+
+export type RuntimeHandoffValidationFailureCode =
+  | 'INVALID_JSON'
+  | 'INVALID_SCHEMA'
+  | 'HOLO_MISLABEL_REFUSED'
+  | 'UNREVIEWED_EXPORT'
+  | 'PATH_TRAVERSAL_REFUSED'
+  | 'INVALID_SOURCE_PACKAGE_HASH'
+  | 'WORKSPACE_MISMATCH'
+  | 'PROJECT_OR_REVISION_MISMATCH'
+  | 'MISSING_DEPENDENCY_LOCKS'
+  | 'TOOLCHAIN_INCOMPATIBLE';
+
+export interface SourcePackageRuntimeHandoffValidationResult {
+  valid: boolean;
+  failureCode?: RuntimeHandoffValidationFailureCode;
+  errors: string[];
+  manifest?: FoundrySourcePackageManifest;
+  verifiedFileCount: number;
+  verifiedFileHashes: Record<string, string>;
+  toolchainCompatible: boolean;
+  lockfileClosureReady: boolean;
+}
+
+/**
+ * Phase B.1 & B.2: Validates a `uor.foundry.source-package.v1` manifest for runtime handoff
+ * to Windmill workspace `uor-offline-foundry`.
+ * Enforces schema, file identities, per-file and top-level SHA-256 digests, path safety,
+ * operator review confirmation, lockfile closure, and pinned toolchain compatibility.
+ */
+export async function validateSourcePackageForRuntimeHandoff(params: {
+  rawOrManifest: string | FoundrySourcePackageManifest;
+  expectedProject?: ProjectRecord;
+  expectedWorkspace?: string;
+}): Promise<SourcePackageRuntimeHandoffValidationResult> {
+  const targetWs = (params.expectedWorkspace ?? ALLOWED_WINDMILL_WORKSPACE).trim();
+  if (targetWs !== ALLOWED_WINDMILL_WORKSPACE) {
+    return {
+      valid: false,
+      failureCode: 'WORKSPACE_MISMATCH',
+      errors: [
+        `Refused runtime handoff to unauthorized workspace "${targetWs}". Only "${ALLOWED_WINDMILL_WORKSPACE}" is permitted.`,
+      ],
+      verifiedFileCount: 0,
+      verifiedFileHashes: {},
+      toolchainCompatible: false,
+      lockfileClosureReady: false,
+    };
+  }
+
+  const rawJson =
+    typeof params.rawOrManifest === 'string'
+      ? params.rawOrManifest
+      : JSON.stringify(params.rawOrManifest);
+
+  // Explicit pre-check on raw object for targetWindmillWorkspace tampering before canonical digest check
+  try {
+    const rawParsed = JSON.parse(rawJson) as Record<string, unknown>;
+    if (
+      rawParsed &&
+      typeof rawParsed === 'object' &&
+      rawParsed.targetWindmillWorkspace !== undefined &&
+      rawParsed.targetWindmillWorkspace !== ALLOWED_WINDMILL_WORKSPACE
+    ) {
+      return {
+        valid: false,
+        failureCode: 'WORKSPACE_MISMATCH',
+        errors: [
+          `Source package targetWindmillWorkspace "${String(rawParsed.targetWindmillWorkspace)}" does not match "${ALLOWED_WINDMILL_WORKSPACE}".`,
+        ],
+        verifiedFileCount: 0,
+        verifiedFileHashes: {},
+        toolchainCompatible: false,
+        lockfileClosureReady: false,
+      };
+    }
+  } catch {
+    // Handled by parseAndVerifySourcePackage below
+  }
+
+  const parsed = await parseAndVerifySourcePackage(rawJson);
+  if (!parsed.ok) {
+    const mappedCode: RuntimeHandoffValidationFailureCode =
+      parsed.errorCode === 'TAMPER_DETECTED' ? 'INVALID_SOURCE_PACKAGE_HASH' : parsed.errorCode;
+    return {
+      valid: false,
+      failureCode: mappedCode,
+      errors: [parsed.error],
+      verifiedFileCount: 0,
+      verifiedFileHashes: {},
+      toolchainCompatible: false,
+      lockfileClosureReady: false,
+    };
+  }
+
+  const { manifest } = parsed;
+  const errors: string[] = [];
+  let failureCode: RuntimeHandoffValidationFailureCode | undefined;
+
+  if (params.expectedProject) {
+    if (manifest.projectId !== params.expectedProject.id) {
+      errors.push(
+        `Source package projectId "${manifest.projectId}" does not match active project "${params.expectedProject.id}".`
+      );
+      failureCode = failureCode ?? 'PROJECT_OR_REVISION_MISMATCH';
+    }
+    if (manifest.sourceRevision !== params.expectedProject.sourceRevision) {
+      errors.push(
+        `Source package sourceRevision "${manifest.sourceRevision}" does not match active project revision "${params.expectedProject.sourceRevision}".`
+      );
+      failureCode = failureCode ?? 'PROJECT_OR_REVISION_MISMATCH';
+    }
+  }
+
+  // Validate offline lockfile closure
+  const closure = evaluateProjectOfflineClosure(manifest.inputMode, manifest.lockfileRefs);
+  if (!closure.readyForOfflineRun) {
+    errors.push(...closure.blockingReasons);
+    failureCode = failureCode ?? 'MISSING_DEPENDENCY_LOCKS';
+  }
+
+  // Validate toolchain compatibility against canonical pins and reject historical invalid SHAs
+  let toolchainCompatible = manifest.requiredToolchain.length > 0;
+  if (!toolchainCompatible) {
+    errors.push('Source package declares zero requiredToolchain entries.');
+    failureCode = failureCode ?? 'TOOLCHAIN_INCOMPATIBLE';
+  } else {
+    for (const toolSpec of manifest.requiredToolchain) {
+      for (const badSha of HISTORICAL_INVALID_PINS) {
+        if (toolSpec.includes(badSha) || toolSpec.includes(badSha.slice(0, 8))) {
+          errors.push(`Toolchain entry "${toolSpec}" references invalidated commit SHA "${badSha}".`);
+          toolchainCompatible = false;
+          failureCode = failureCode ?? 'TOOLCHAIN_INCOMPATIBLE';
+        }
+      }
+      if (/unverified|unknown-toolchain/i.test(toolSpec)) {
+        errors.push(`Toolchain entry "${toolSpec}" is not a verified Mac Studio toolchain pin.`);
+        toolchainCompatible = false;
+        failureCode = failureCode ?? 'TOOLCHAIN_INCOMPATIBLE';
+      }
+    }
+    const combinedTools = manifest.requiredToolchain.join(' | ');
+    const hasPinnedCore =
+      combinedTools.includes('prismpm v0.5.0') ||
+      combinedTools.includes('lexlean 0.4.0') ||
+      combinedTools.includes(CANONICAL_TOOLCHAIN_PIN_MAP.prismpm.slice(0, 8)) ||
+      combinedTools.includes(CANONICAL_TOOLCHAIN_PIN_MAP.lexlean.slice(0, 8)) ||
+      combinedTools.includes(CANONICAL_TOOLCHAIN_PIN_MAP.uorust.slice(0, 8));
+    if (!hasPinnedCore) {
+      errors.push(
+        'Source package requiredToolchain does not reference any pinned PrismPM (v0.5.0 / 6c876017), LexLean (0.4.0 / 71defb4c), or UORust (5868afe3) revision.'
+      );
+      toolchainCompatible = false;
+      failureCode = failureCode ?? 'TOOLCHAIN_INCOMPATIBLE';
+    }
+  }
+
+  const verifiedFileHashes: Record<string, string> = {};
+  for (const file of manifest.files) {
+    verifiedFileHashes[file.path] = file.sha256;
+  }
+
+  return {
+    valid: errors.length === 0,
+    failureCode: errors.length > 0 ? failureCode : undefined,
+    errors,
+    manifest,
+    verifiedFileCount: manifest.files.length,
+    verifiedFileHashes,
+    toolchainCompatible,
+    lockfileClosureReady: closure.readyForOfflineRun,
+  };
+}
+
+export interface CalculatorRuntimeHandoffStagePreview {
+  stageContractName: 'INTAKE' | 'SPECIFY' | 'LOCK' | 'CHECK';
+  commandId: 'prism_intake_validate' | 'prism_specify_validate' | 'prism_lock_check' | 'prismpm_check';
+  windmillFlowPath: string;
+  windmillRunnable: string;
+  validatedArgv: string[];
+  readOnlyValidationStage: true;
+  establishesVerification: false;
+}
+
+export interface CalculatorRuntimeHandoffPreview {
+  schema: 'uor.foundry.source-package.v1';
+  packageId: string;
+  packageDigestSha256: string;
+  projectId: string;
+  projectName: string;
+  projectRelativePath: string;
+  sourceRevision: string;
+  targetWindmillWorkspace: 'uor-offline-foundry';
+  verifiedFileCount: number;
+  lockfileRefs: string[];
+  requiredToolchain: string[];
+  readOnlyValidationStages: CalculatorRuntimeHandoffStagePreview[];
+  separationBoundaries: {
+    authoredSourceState: 'UNVERIFIED_AUTHORED_SOURCE_PACKAGE';
+    compiledArtifactState: 'NOT_BUILT_IN_BROWSER';
+    independentVerificationState: 'NOT_VERIFIED';
+    releaseAuthorizationState: 'RELEASE_BLOCKED';
+  };
+}
+
+/**
+ * Phase B.3 & B.4: Builds an explicit handoff preview for the Calculator (or active Prism)
+ * project binding `uor.foundry.source-package.v1` to the canonical Windmill intake and
+ * read-only validation stages (`INTAKE`, `SPECIFY`, `LOCK`, `CHECK`).
+ */
+export function buildCalculatorRuntimeHandoffPreview(params: {
+  project: ProjectRecord;
+  manifest: FoundrySourcePackageManifest;
+  projectRelativePath?: string;
+}): CalculatorRuntimeHandoffPreview {
+  const relPath =
+    params.projectRelativePath ??
+    (params.project.id === 'proj-prism-calc' ? 'examples/Calculator' : `projects/${params.project.id}`);
+
+  const stageCommandIds: Array<CalculatorRuntimeHandoffStagePreview['commandId']> = [
+    'prism_intake_validate',
+    'prism_specify_validate',
+    'prism_lock_check',
+    'prismpm_check',
+  ];
+
+  const readOnlyValidationStages: CalculatorRuntimeHandoffStagePreview[] = stageCommandIds.map(
+    (commandId) => {
+      const entry = CANONICAL_COMMAND_BY_ID[commandId];
+      return {
+        stageContractName: entry.stageContractName as CalculatorRuntimeHandoffStagePreview['stageContractName'],
+        commandId,
+        windmillFlowPath: entry.windmillFlowPath,
+        windmillRunnable: entry.windmillRunnable,
+        validatedArgv: buildValidatedCommandArgv(entry, relPath),
+        readOnlyValidationStage: true,
+        establishesVerification: false,
+      };
+    }
+  );
+
+  return {
+    schema: params.manifest.schema,
+    packageId: params.manifest.packageId,
+    packageDigestSha256: params.manifest.packageDigestSha256,
+    projectId: params.project.id,
+    projectName: params.project.name,
+    projectRelativePath: relPath,
+    sourceRevision: params.manifest.sourceRevision,
+    targetWindmillWorkspace: ALLOWED_WINDMILL_WORKSPACE,
+    verifiedFileCount: params.manifest.files.length,
+    lockfileRefs: [...params.manifest.lockfileRefs],
+    requiredToolchain: [...params.manifest.requiredToolchain],
+    readOnlyValidationStages,
+    separationBoundaries: {
+      authoredSourceState: 'UNVERIFIED_AUTHORED_SOURCE_PACKAGE',
+      compiledArtifactState: 'NOT_BUILT_IN_BROWSER',
+      independentVerificationState: 'NOT_VERIFIED',
+      releaseAuthorizationState: 'RELEASE_BLOCKED',
+    },
+  };
+}
+
