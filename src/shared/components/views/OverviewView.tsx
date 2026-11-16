@@ -11,6 +11,8 @@ import {
   WorkflowRun,
 } from '../../types/foundry';
 import { StatusTag } from '../StatusTag';
+import { WindmillExecutionService } from '../../adapters/windmillExecutionService';
+import { JobRegistryPanel } from '../studio/JobRegistryPanel';
 
 interface OverviewViewProps {
   projects: ProjectRecord[];
@@ -22,6 +24,7 @@ interface OverviewViewProps {
   onNavigate: (section: NavigationSectionId) => void;
   onSelectProject: (projectId: string) => void;
   onOpenIntake: () => void;
+  windmillService?: WindmillExecutionService;
 }
 
 export const OverviewView: React.FC<OverviewViewProps> = ({
@@ -34,6 +37,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   onNavigate,
   onSelectProject,
   onOpenIntake,
+  windmillService,
 }) => {
   const [exportNotice, setExportNotice] = useState<string | null>(null);
 
@@ -272,6 +276,9 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
           </div>
         </section>
       </div>
+
+      {/* Recent Windmill Job Registry Panel */}
+      <JobRegistryPanel windmillService={windmillService} />
 
       {/* Integration Snapshot & Recent Activity */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">

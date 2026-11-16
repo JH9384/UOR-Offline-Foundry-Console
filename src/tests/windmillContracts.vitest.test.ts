@@ -25,9 +25,13 @@ import {
   validateSourcePackageForRuntimeHandoff,
 } from '../shared/services/sourceAuthoringService';
 import * as wmillContract from '../../uor_foundry.raw_app/wmill.contract';
-import { main as runtimeHealthMain } from '../../uor_foundry.raw_app/backend/runtime_health';
+import {
+  CANONICAL_RAW_APP_RUNNABLES,
+  main as runtimeHealthMain,
+} from '../../uor_foundry.raw_app/backend/runtime_health';
 import { main as jobStatusMain } from '../../uor_foundry.raw_app/backend/job_status';
 import { main as intakeValidateMain } from '../../uor_foundry.raw_app/backend/intake_validate';
+import { WINDMILL_TARGET_CONFIG } from '../shared/adapters/windmillAdapter';
 
 function createMockTransport(options?: {
   health?: Partial<MockWindmillBackendHealth>;
@@ -1029,6 +1033,77 @@ describe('Phase A/B/C: Local Windmill Execution Client, Source-Package Handoff &
     expect(
       builtOnlyLifecycle.states.find((s) => s.state === 'RELEASE APPROVED')?.satisfied
     ).toBe(false);
+  });
+
+  it('8. executes read-only acceptance verification for runtime health, registered runnables, and genuine job-status retrieval with compiler execution and release disabled', async () => {
+    // 1. Canonical port, workspace, and runnable inventory reconciliation
+    expect(WINDMILL_TARGET_CONFIG.baseUrl).toBe('http://127.0.0.1:8080');
+    expect(WINDMILL_TARGET_CONFIG.workspace).toBe('uor-offline-foundry');
+    expect(CANONICAL_RAW_APP_RUNNABLES).toEqual([
+      'backend/runtime_health.ts',
+      'backend/intake_validate.ts',
+      'backend/job_status.ts',
+      'backend/local_ai_advisory.ts',
+      'backend/workflow_dispatch.ts',
+      'backend/prism_stage_dispatch.ts',
+    ]);
+    expect(FIXED_WINDMILL_COMMAND_REGISTRY).toHaveLength(16);
+
+    // 2. Read-only runtime_health runnable verification (compiler & release disabled)
+    const healthReport = await runtimeHealthMain('uor-offline-foundry', {
+      authenticatedSession: true,
+      registeredRunnables: [...CANONICAL_RAW_APP_RUNNABLES],
+      registeredFlows: [],
+    });
+    expect(healthReport.workspace).toBe('uor-offline-foundry');
+    expect(healthReport.packagingStatus).toBe('REGISTERED_READ_ONLY_VERIFIED');
+    expect(healthReport.readOnlyHealthVerified).toBe(true);
+    expect(healthReport.liveExecutionEnabled).toBe(false);
+    expect(healthReport.releaseAuthorityDelegated).toBe(false);
+    expect(healthReport.canonicalRegistryCommandCount).toBe(16);
+    expect(healthReport.registeredRunnables).toHaveLength(6);
+
+    // 3. Generated wmill.ts contract acceptance check
+    const mockGeneratedWmill = {
+      backend: {
+        runtime_health: async () => healthReport,
+        intake_validate: async () => ({ valid: true }),
+      },
+      backendAsync: {
+        local_ai_advisory: async () => 'job-1',
+        workflow_dispatch: async () => 'job-2',
+        prism_stage_dispatch: async () => 'job-3',
+        job_status: async () => 'job-4',
+      },
+      getJob: async (id: string) => ({ id, running: false, success: true }),
+      waitJob: async () => ({}),
+      streamJob: async () => undefined,
+    };
+    const contractCheck = wmillContract.verifyGeneratedWmillContract(mockGeneratedWmill);
+    expect(contractCheck.valid).toBe(true);
+    expect(contractCheck.status).toBe('WMILL_CONTRACT_VALIDATED');
+    expect(contractCheck.missingBindings).toEqual([]);
+
+    // 4. Genuine read-only job_status retrieval without side effects
+    const readOnlyJobResult = await jobStatusMain({
+      jobId: 'wm-readonly-accept-01',
+      workspace: 'uor-offline-foundry',
+      readOnlyLookup: async (jobId, workspace) => ({
+        jobId,
+        workspace,
+        flowPath: 'f/uor_foundry/prismpm_verify',
+        stageId: 'verify',
+        commandId: 'prismpm_verify',
+        state: 'COMPLETED',
+        sequence: 1,
+        updatedAt: '2026-03-29T12:15:00.000Z',
+        logs: ['Read-only job snapshot retrieved from Windmill'],
+        evidenceRefs: ['ev-accept-01'],
+      }),
+    });
+    expect(readOnlyJobResult.found).toBe(true);
+    expect(readOnlyJobResult.status).toBe('RETRIEVED_READ_ONLY');
+    expect(readOnlyJobResult.snapshot?.jobId).toBe('wm-readonly-accept-01');
   });
 });
 

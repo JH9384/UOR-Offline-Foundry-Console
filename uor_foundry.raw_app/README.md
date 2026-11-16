@@ -19,26 +19,27 @@ To avoid unsupported `../src/` parent-directory imports in `wmill app dev` build
 - `package.json` & `tsconfig.json` — Standalone React/Tailwind/Vite/TypeScript configuration aligned with the root lockfile.
 - `index.tsx` & `App.tsx` — Frontend entrypoint consuming staged `./shared/App` and `./shared/index.css`.
 - `wmill.contract.ts` — Typed interface mirroring Windmill's generated `wmill.ts` methods (`backend`, `backendAsync`, `getJob`, `waitJob`, `streamJob`). **Do not manually replace `wmill.ts`.**
-- `backend/*.ts` — Five fail-closed Windmill runnable scaffolds (`runtime_health`, `local_ai_advisory`, `intake_validate`, `workflow_dispatch`, `job_status`).
+- `backend/*.ts` — Six fail-closed Windmill runnable scaffolds (`runtime_health.ts`, `intake_validate.ts`, `job_status.ts`, `local_ai_advisory.ts`, `workflow_dispatch.ts`, `prism_stage_dispatch.ts`) plus auto-generated `backend/generated_command_registry.ts`.
+- `flows/prism_hologram_delivery.flow.json` — Canonical 10-stage workflow manifest mapped 1-to-1 to the 16 fixed commands.
 
-## Local Mac Studio Packaging & Deployment Steps (Manual Operator Execution)
+## Canonical Minimal Procedure for Connecting to an Already-Running Windmill Installation (Mac Studio)
 
-1. Stage self-contained sources and verify package integrity from repository root:
+Do not download or reinstall Windmill automatically. Verify that an existing Windmill instance is already listening on `http://127.0.0.1:8080` and that `wmill` CLI is present on `PATH` before proceeding:
+
+1. From repository root, validate self-contained packaging and standalone TypeScript compilation (no network or live server required):
    ```bash
+   npm run windmill:prepare
    npm run windmill:validate
    ```
-2. Verify `wmill` CLI points to your self-hosted workspace (do **not** commit workspace secrets):
+2. Verify the existing local Windmill server responds on `http://127.0.0.1:8080` and bind `wmill` to workspace `uor-offline-foundry`:
    ```bash
+   curl -fsS http://127.0.0.1:8080/api/version
    wmill workspace add uor-offline-foundry uor-offline-foundry http://127.0.0.1:8080
+   wmill workspace switch uor-offline-foundry
    ```
-3. Install dependencies inside `uor_foundry.raw_app/` and launch Windmill's full-code dev server to generate the real `./wmill.ts`:
+3. Inside `uor_foundry.raw_app/`, run Windmill's full-code app dev harness to generate `./wmill.ts` from `./backend/*.ts` and verify read-only health (`runtime_health`) and job retrieval (`job_status`) while keeping compiler execution and production release disabled:
    ```bash
    cd uor_foundry.raw_app
-   npm install
    wmill app dev
    ```
-4. Verify generated `wmill.ts` bindings against the runnables in `backend/`, configure Windmill resources for approved flows/LM Studio advisory bridges without embedding credentials in frontend code, and push when ready:
-   ```bash
-   wmill sync push
-   ```
-5. **Authority Boundary**: Windmill orchestration never overrides independent UOR verification (`LexLean`, `PrismPM`, `Forge Kernel`, `Hologram Forge Application Core`, `Browser & Identity Acceptance Suites`) or human `APPROVED_FOR_RELEASE` governance.
+4. **Authority Boundary**: Windmill orchestration never overrides independent UOR verification (`LexLean`, `PrismPM`, `Forge Kernel`, `Hologram Forge Application Core`, `Browser & Identity Acceptance Suites`) or human `APPROVED_FOR_RELEASE` governance.

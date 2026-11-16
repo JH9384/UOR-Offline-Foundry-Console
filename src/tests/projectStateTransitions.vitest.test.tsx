@@ -2,7 +2,9 @@ import React from 'react';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IntakeModal } from '../shared/components/IntakeModal';
+import { JobRegistryPanel } from '../shared/components/studio/JobRegistryPanel';
 import { SourceCompliancePanel } from '../shared/components/studio/SourceCompliancePanel';
+import { FailClosedLocalWindmillService } from '../shared/adapters/windmillExecutionService';
 import {
   INITIAL_APPROVALS,
   INITIAL_ARTIFACTS,
@@ -166,5 +168,119 @@ describe('UOR Project Templates, State Transitions & Studio Components (Vitest +
     // Must not falsely mark sources QUALIFIED or CONNECTED
     expect(screen.queryByText('QUALIFIED')).toBeNull();
     expect(screen.queryByText('CONNECTED')).toBeNull();
+  });
+
+  it('renders JobRegistryPanel with Recharts distribution, Running/Built/Verified classification, and interactive table filtering', async () => {
+    const calcProject = INITIAL_PROJECTS[0];
+    const mockService = new FailClosedLocalWindmillService('VITE_AUTHENTICATED_LOCAL_PROXY', {
+      async probeHealth() {
+        return {
+          reachable: true,
+          workspace: 'uor-offline-foundry',
+          authenticated: true,
+          permissionsValidated: true,
+          registeredRunnables: [
+            'backend/runtime_health.ts',
+            'backend/intake_validate.ts',
+            'backend/job_status.ts',
+          ],
+          registeredFlows: ['u/foundry/calculator_verify_flow'],
+          wmillContractStatus: 'LOCAL_PROXY_VALIDATED',
+        };
+      },
+      async fetchJobById() {
+        return { ok: false, code: 'NOT_CONNECTED', message: 'unused' };
+      },
+      async listJobs() {
+        return {
+          ok: true,
+          workspace: 'uor-offline-foundry',
+          records: [
+            {
+              jobId: 'wm-job-running-101',
+              projectId: calcProject.id,
+              workflowId: calcProject.workflowId,
+              workflowName: 'Calculator Check',
+              flowPath: 'f/uor_foundry/prismpm_check',
+              flowVersion: '1.0.0',
+              sourceRevision: calcProject.sourceRevision,
+              idempotencyKey: 'idem-101',
+              state: 'RUNNING',
+              startedAt: '2026-03-29T10:00:00Z',
+              logs: ['Running prismpm check'],
+              artifactRefs: [],
+              evidenceRefs: [],
+              retryAvailable: false,
+              isSyntheticFixture: false,
+              flowRegisteredInWorkspace: true,
+            },
+            {
+              jobId: 'wm-job-built-102',
+              projectId: calcProject.id,
+              workflowId: calcProject.workflowId,
+              workflowName: 'Calculator Build',
+              flowPath: 'f/uor_foundry/prismpm_build_locked',
+              flowVersion: '1.0.0',
+              sourceRevision: calcProject.sourceRevision,
+              idempotencyKey: 'idem-102',
+              state: 'COMPLETED',
+              startedAt: '2026-03-29T10:05:00Z',
+              completedAt: '2026-03-29T10:05:30Z',
+              logs: ['Emitted Calculator.holo'],
+              structuredResult: { stage: 'BUILD', exitCode: 0 },
+              artifactRefs: ['art-prism-calc-holo'],
+              evidenceRefs: [],
+              retryAvailable: false,
+              isSyntheticFixture: false,
+              flowRegisteredInWorkspace: true,
+            },
+            {
+              jobId: 'wm-job-verified-103',
+              projectId: calcProject.id,
+              workflowId: calcProject.workflowId,
+              workflowName: 'Calculator Verify',
+              flowPath: 'f/uor_foundry/prismpm_verify',
+              flowVersion: '1.0.0',
+              sourceRevision: calcProject.sourceRevision,
+              idempotencyKey: 'idem-103',
+              state: 'COMPLETED',
+              startedAt: '2026-03-29T10:10:00Z',
+              completedAt: '2026-03-29T10:10:45Z',
+              logs: ['Verified 15-gate VV twice'],
+              structuredResult: { stage: 'VERIFY', exitCode: 0 },
+              artifactRefs: ['art-prism-calc-holo'],
+              evidenceRefs: ['ev-vv-103'],
+              retryAvailable: false,
+              isSyntheticFixture: false,
+              flowRegisteredInWorkspace: true,
+            },
+          ],
+        };
+      },
+    });
+
+    await mockService.checkRuntimeHealth();
+
+    render(<JobRegistryPanel windmillService={mockService} />);
+
+    expect(screen.getByTestId('job-registry-panel')).toBeTruthy();
+    expect(screen.getByTestId('job-registry-chart-container')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('job-registry-refresh-btn'));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(screen.getByTestId('job-registry-summary-counts').textContent).toContain('Running: 1');
+    expect(screen.getByTestId('job-registry-summary-counts').textContent).toContain('Built: 1');
+    expect(screen.getByTestId('job-registry-summary-counts').textContent).toContain('Verified: 1');
+
+    expect(screen.getByTestId('job-registry-row-wm-job-running-101')).toBeTruthy();
+    expect(screen.getByTestId('job-registry-row-wm-job-built-102')).toBeTruthy();
+    expect(screen.getByTestId('job-registry-row-wm-job-verified-103')).toBeTruthy();
+
+    // Filter to Verified only
+    fireEvent.click(screen.getByTestId('job-registry-filter-verified'));
+    expect(screen.queryByTestId('job-registry-row-wm-job-running-101')).toBeNull();
+    expect(screen.queryByTestId('job-registry-row-wm-job-built-102')).toBeNull();
+    expect(screen.getByTestId('job-registry-row-wm-job-verified-103')).toBeTruthy();
   });
 });
