@@ -4,6 +4,8 @@ import {
   Bar,
   BarChart,
   Cell,
+  Pie,
+  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -253,44 +255,78 @@ export const JobRegistryPanel: React.FC<JobRegistryPanelProps> = ({
 
           <div
             data-testid="job-registry-chart-container"
-            className="w-full h-36 min-h-[144px]"
+            className="w-full grid grid-cols-1 sm:grid-cols-2 gap-3 min-h-[144px]"
           >
-            <ResponsiveContainer width="100%" height={140} minWidth={200}>
-              <BarChart
-                data={chartData}
-                margin={{ top: 8, right: 12, left: -16, bottom: 0 }}
-              >
-                <XAxis
-                  dataKey="name"
-                  stroke="#94a3b8"
-                  fontSize={11}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <YAxis
-                  allowDecimals={false}
-                  stroke="#64748b"
-                  fontSize={11}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <Tooltip
-                  cursor={{ fill: 'rgba(30, 41, 59, 0.45)' }}
-                  contentStyle={{
-                    backgroundColor: '#0f172a',
-                    borderColor: '#334155',
-                    borderRadius: '6px',
-                    fontSize: '12px',
-                    color: '#f1f5f9',
-                  }}
-                />
-                <Bar dataKey="count" radius={[4, 4, 0, 0]}>
-                  {chartData.map((entry) => (
-                    <Cell key={entry.stateKey} fill={entry.fill} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+            <div data-testid="job-registry-pie-chart" className="w-full h-36">
+              <ResponsiveContainer width="100%" height={140} minWidth={140}>
+                <PieChart>
+                  <Pie
+                    data={chartData}
+                    dataKey="count"
+                    nameKey="name"
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={28}
+                    outerRadius={52}
+                    paddingAngle={2}
+                    stroke="#0B0F17"
+                    strokeWidth={2}
+                  >
+                    {chartData.map((entry) => (
+                      <Cell key={`pie-${entry.stateKey}`} fill={entry.fill} />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#0f172a',
+                      borderColor: '#334155',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      color: '#f1f5f9',
+                    }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div className="w-full h-36">
+              <ResponsiveContainer width="100%" height={140} minWidth={140}>
+                <BarChart
+                  data={chartData}
+                  margin={{ top: 8, right: 12, left: -16, bottom: 0 }}
+                >
+                  <XAxis
+                    dataKey="name"
+                    stroke="#94a3b8"
+                    fontSize={11}
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  <YAxis
+                    allowDecimals={false}
+                    stroke="#64748b"
+                    fontSize={11}
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  <Tooltip
+                    cursor={{ fill: 'rgba(30, 41, 59, 0.45)' }}
+                    contentStyle={{
+                      backgroundColor: '#0f172a',
+                      borderColor: '#334155',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      color: '#f1f5f9',
+                    }}
+                  />
+                  <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                    {chartData.map((entry) => (
+                      <Cell key={entry.stateKey} fill={entry.fill} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
           </div>
         </div>
 

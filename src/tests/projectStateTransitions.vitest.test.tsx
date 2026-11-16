@@ -265,6 +265,7 @@ describe('UOR Project Templates, State Transitions & Studio Components (Vitest +
 
     expect(screen.getByTestId('job-registry-panel')).toBeTruthy();
     expect(screen.getByTestId('job-registry-chart-container')).toBeTruthy();
+    expect(screen.getByTestId('job-registry-pie-chart')).toBeTruthy();
 
     fireEvent.click(screen.getByTestId('job-registry-refresh-btn'));
     await new Promise((r) => setTimeout(r, 20));
