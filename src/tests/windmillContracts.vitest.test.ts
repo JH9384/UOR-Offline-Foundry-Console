@@ -1325,6 +1325,47 @@ describe('Phase A/B/C: Local Windmill Execution Client, Source-Package Handoff &
           };
         }
 
+        if (url.includes('/api/w/uor-offline-foundry/jobs/list')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify([
+                {
+                  id: 'wm-live-job-smoke-001',
+                  workspace_id: 'uor-offline-foundry',
+                  script_path: 'u/admin/worker_smoke_test',
+                  created_at: '2026-03-29T12:00:00.000Z',
+                  started_at: '2026-03-29T12:00:01.000Z',
+                  duration_ms: 45,
+                  running: false,
+                  success: true,
+                  result: { status: 'RUNTIME_SMOKE_TEST_PASS' },
+                },
+              ]),
+          };
+        }
+
+        if (url.endsWith('/api/w/uor-offline-foundry/jobs_u/get/wm-live-job-smoke-001')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({
+                id: 'wm-live-job-smoke-001',
+                workspace_id: 'uor-offline-foundry',
+                script_path: 'u/admin/worker_smoke_test',
+                created_at: '2026-03-29T12:00:00.000Z',
+                started_at: '2026-03-29T12:00:01.000Z',
+                duration_ms: 45,
+                running: false,
+                success: true,
+                result: { status: 'RUNTIME_SMOKE_TEST_PASS' },
+                logs: 'Smoke test executed cleanly',
+              }),
+          };
+        }
+
         return {
           ok: false,
           status: 404,
@@ -1342,14 +1383,14 @@ describe('Phase A/B/C: Local Windmill Execution Client, Source-Package Handoff &
       });
 
       expect(passSummary.ok).toBe(true);
-      expect(passSummary.passed).toBe(7);
+      expect(passSummary.passed).toBe(8);
       expect(passSummary.failed).toBe(0);
-      expect(passSummary.total).toBe(7);
+      expect(passSummary.total).toBe(8);
       // Verify token is never printed in any log line
       expect(loggedLines.some((line) => line.includes(secretToken))).toBe(false);
       expect(
         loggedLines.some((line) =>
-          line.includes('[windmill:test] Summary: 7 passed, 0 failed, 7 total')
+          line.includes('[windmill:test] Summary: 8 passed, 0 failed, 8 total')
         )
       ).toBe(true);
 
@@ -1371,9 +1412,9 @@ describe('Phase A/B/C: Local Windmill Execution Client, Source-Package Handoff &
       });
 
       expect(failSummary.ok).toBe(false);
-      expect(failSummary.passed).toBe(6);
+      expect(failSummary.passed).toBe(7);
       expect(failSummary.failed).toBe(1);
-      expect(failSummary.total).toBe(7);
+      expect(failSummary.total).toBe(8);
       expect(failSummary.results[0].passed).toBe(false);
       expect(failSummary.results[0].detail).toContain('[REDACTED_WINDMILL_TOKEN]');
       expect(failSummary.results[0].detail).not.toContain(secretToken);
@@ -1385,6 +1426,185 @@ describe('Phase A/B/C: Local Windmill Execution Client, Source-Package Handoff &
       else process.env.WM_JOB_ID = prevJobId;
     }
   });
+
+  it('11. verifies the local server-side read-only Windmill adapter and job_status authenticated HTTP lookup while keeping credentials server-side and dispatch disabled', async () => {
+    const {
+      createServerSideWindmillReadOnlyTransport,
+      createBrowserProxyWindmillTransport,
+    } = await import('../shared/adapters/windmillLocalReadOnlyAdapter');
+    const { createAuthenticatedWindmillHttpLookup } = await import(
+      '../../uor_foundry.raw_app/backend/job_status'
+    );
+
+    const serverSecret = 'wm_server_only_secret_token_777';
+
+    // 1. Missing server-side token fails closed without leaking credentials or synthesizing fake jobs
+    const unconfiguredTransport = createServerSideWindmillReadOnlyTransport({
+      getToken: () => undefined,
+    });
+    const unconfiguredHealth = await unconfiguredTransport.probeHealth();
+    expect(unconfiguredHealth.reachable).toBe(false);
+    expect(unconfiguredHealth.authenticated).toBe(false);
+
+    const unconfiguredList = await unconfiguredTransport.listJobs!();
+    expect(unconfiguredList.ok).toBe(false);
+    if (!unconfiguredList.ok) {
+      expect(unconfiguredList.code).toBe('AUTH_NOT_VALIDATED');
+    }
+
+    // 2. Authenticated server-side read-only transport against mocked Windmill 127.0.0.1:8080
+    let callCount = 0;
+    const mockWindmillFetch = async (inputUrl: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(inputUrl);
+      const auth = (init?.headers as Record<string, string>)?.Authorization;
+      if (auth !== `Bearer ${serverSecret}`) {
+        return new Response('Unauthorized', { status: 401 });
+      }
+
+      if (url.endsWith('/jobs/run_wait_result/p/u/admin/runtime_health')) {
+        const healthBody = await runtimeHealthMain('uor-offline-foundry', {});
+        return new Response(JSON.stringify(healthBody), { status: 200 });
+      }
+
+      if (url.includes('/api/w/uor-offline-foundry/jobs/list')) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: '0195f000-aaaa-7000-8000-000000000001',
+              workspace_id: 'uor-offline-foundry',
+              script_path: 'u/admin/runtime_health',
+              created_at: '2026-03-29T14:00:00.000Z',
+              started_at: '2026-03-29T14:00:01.000Z',
+              duration_ms: 120,
+              running: false,
+              success: true,
+              result: {
+                workspace: 'uor-offline-foundry',
+                canonicalRegistryCommandCount: 16,
+              },
+              logs: `Executed runtime_health with token ${serverSecret}`,
+            },
+          ]),
+          { status: 200 }
+        );
+      }
+
+      if (url.endsWith('/api/w/uor-offline-foundry/jobs_u/get/0195f000-aaaa-7000-8000-000000000001')) {
+        callCount += 1;
+        // First two calls return sequence 2 (to test duplicate rejection on 2nd call), third call returns regressed sequence 1
+        const seq = callCount <= 2 ? 2 : 1;
+        const updatedAt =
+          callCount <= 2 ? '2026-03-29T14:00:02.000Z' : '2026-03-29T13:59:00.000Z';
+        return new Response(
+          JSON.stringify({
+            id: '0195f000-aaaa-7000-8000-000000000001',
+            workspace_id: 'uor-offline-foundry',
+            script_path: 'u/admin/runtime_health',
+            created_at: '2026-03-29T14:00:00.000Z',
+            started_at: '2026-03-29T14:00:01.000Z',
+            duration_ms: 120,
+            running: false,
+            success: true,
+            sequence: seq,
+            updatedAt,
+            result: {
+              workspace: 'uor-offline-foundry',
+              canonicalRegistryCommandCount: 16,
+            },
+            logs: `Completed with ${serverSecret}`,
+          }),
+          { status: 200 }
+        );
+      }
+
+      return new Response('Not Found', { status: 404 });
+    };
+
+    const serverTransport = createServerSideWindmillReadOnlyTransport({
+      baseUrl: 'http://127.0.0.1:8080',
+      workspace: 'uor-offline-foundry',
+      getToken: () => serverSecret,
+      fetchImpl: mockWindmillFetch as typeof fetch,
+    });
+
+    const service = new FailClosedLocalWindmillService(
+      'VITE_AUTHENTICATED_LOCAL_PROXY',
+      serverTransport
+    );
+
+    const health = await service.checkRuntimeHealth();
+    expect(health.reachable).toBe(true);
+    expect(health.authenticated).toBe(true);
+    expect(health.readOnlyHealthVerified).toBe(true);
+    // Workflow dispatch remains disabled because registeredFlows is empty and dispatchFlow is undefined
+    expect(health.dispatchEnabled).toBe(false);
+
+    const historyRes = await service.listApprovedExecutionHistory();
+    expect(historyRes.ok).toBe(true);
+    expect(historyRes.records).toHaveLength(1);
+    expect(historyRes.records[0].jobId).toBe('0195f000-aaaa-7000-8000-000000000001');
+    expect(historyRes.records[0].isSyntheticFixture).toBe(false);
+    expect(historyRes.records[0].structuredResult).toEqual({
+      workspace: 'uor-offline-foundry',
+      canonicalRegistryCommandCount: 16,
+    });
+    // Server secret is redacted from job logs before reaching client
+    expect(JSON.stringify(historyRes)).not.toContain(serverSecret);
+    expect(historyRes.records[0].logs[0]).toContain('[REDACTED_WINDMILL_TOKEN]');
+
+    // First job status lookup succeeds
+    const job1 = await service.getJobStatusAndResult(
+      '0195f000-aaaa-7000-8000-000000000001'
+    );
+    expect(job1.ok).toBe(true);
+    if (job1.ok) {
+      expect(job1.record.state).toBe('COMPLETED');
+      expect(JSON.stringify(job1.record)).not.toContain(serverSecret);
+    }
+
+    // Second identical job status lookup is rejected as DUPLICATE_JOB_RESPONSE
+    const job2Dup = await service.getJobStatusAndResult(
+      '0195f000-aaaa-7000-8000-000000000001'
+    );
+    expect(job2Dup.ok).toBe(false);
+    if (!job2Dup.ok) {
+      expect(job2Dup.diagnostic.code).toBe('DUPLICATE_JOB_RESPONSE');
+    }
+
+    // Third regressed job status lookup is rejected as STALE_JOB_RESPONSE
+    const job3Stale = await service.getJobStatusAndResult(
+      '0195f000-aaaa-7000-8000-000000000001'
+    );
+    expect(job3Stale.ok).toBe(false);
+    if (!job3Stale.ok) {
+      expect(job3Stale.diagnostic.code).toBe('STALE_JOB_RESPONSE');
+    }
+
+    // Direct jobStatusMain with createAuthenticatedWindmillHttpLookup also retrieves read-only snapshot & enforces watermarks
+    callCount = 0;
+    const directJobStatus = await jobStatusMain({
+      jobId: '0195f000-aaaa-7000-8000-000000000001',
+      workspace: 'uor-offline-foundry',
+      readOnlyLookup: createAuthenticatedWindmillHttpLookup({
+        baseUrl: 'http://127.0.0.1:8080',
+        token: serverSecret,
+        fetchImpl: mockWindmillFetch as typeof fetch,
+      }),
+    });
+    expect(directJobStatus.found).toBe(true);
+    expect(directJobStatus.status).toBe('RETRIEVED_READ_ONLY');
+    expect(directJobStatus.snapshot?.jobId).toBe('0195f000-aaaa-7000-8000-000000000001');
+
+    // Browser proxy transport fails closed cleanly when local server proxy is unreachable
+    const unreachableProxy = createBrowserProxyWindmillTransport({
+      fetchImpl: (async () => {
+        throw new Error('ECONNREFUSED');
+      }) as typeof fetch,
+    });
+    const proxyList = await unreachableProxy.listJobs!();
+    expect(proxyList.ok).toBe(false);
+  });
 });
+
 
 

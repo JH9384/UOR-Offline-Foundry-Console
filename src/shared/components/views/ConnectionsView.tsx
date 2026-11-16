@@ -10,6 +10,7 @@ import {
   FailClosedLocalWindmillService,
   WindmillExecutionService,
 } from '../../adapters/windmillExecutionService';
+import { createBrowserProxyWindmillTransport } from '../../adapters/windmillLocalReadOnlyAdapter';
 import { foundryService } from '../../services/foundryService';
 import {
   SystemConnectionRecord,
@@ -39,7 +40,11 @@ export const ConnectionsView: React.FC<ConnectionsViewProps> = ({
 }) => {
   const [probeMessage, setProbeMessage] = useState<string | null>(null);
   const defaultLocalService = useMemo(
-    () => new FailClosedLocalWindmillService('VITE_AUTHENTICATED_LOCAL_PROXY'),
+    () =>
+      new FailClosedLocalWindmillService(
+        'VITE_AUTHENTICATED_LOCAL_PROXY',
+        createBrowserProxyWindmillTransport()
+      ),
     []
   );
   const localService = windmillService ?? defaultLocalService;

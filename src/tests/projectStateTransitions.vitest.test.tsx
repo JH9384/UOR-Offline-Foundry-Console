@@ -270,9 +270,25 @@ describe('UOR Project Templates, State Transitions & Studio Components (Vitest +
     expect(screen.getByTestId('job-registry-panel')).toBeTruthy();
     expect(screen.getByTestId('job-registry-chart-container')).toBeTruthy();
     expect(screen.getByTestId('job-registry-pie-chart')).toBeTruthy();
+    // Before refresh in LOCAL mode, no synthetic DEMO fixtures are shown and indicator is UNAVAILABLE
+    expect(screen.getByTestId('job-registry-mode-indicator').textContent).toBe(
+      'UNAVAILABLE'
+    );
+    expect(screen.getByTestId('job-registry-empty-row').textContent).toContain(
+      'UNAVAILABLE'
+    );
 
     fireEvent.click(screen.getByTestId('job-registry-refresh-btn'));
     await new Promise((r) => setTimeout(r, 20));
+
+    // After live fetch succeeds, indicator transitions to LIVE and displays real results
+    expect(screen.getByTestId('job-registry-mode-indicator').textContent).toBe('LIVE');
+    expect(
+      screen.getByTestId('job-registry-result-wm-job-verified-103').textContent
+    ).toContain('"stage":"VERIFY"');
+    expect(
+      screen.getByTestId('job-registry-origin-wm-job-verified-103').textContent
+    ).toBe('LIVE');
 
     expect(screen.getByTestId('job-registry-summary-counts').textContent).toContain('Running: 1');
     expect(screen.getByTestId('job-registry-summary-counts').textContent).toContain('Built: 1');

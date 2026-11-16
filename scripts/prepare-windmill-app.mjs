@@ -186,16 +186,19 @@ export const CANONICAL_COMMAND_IDS = ${JSON.stringify(commandIds, null, 2)} as c
 }
 
 function syncRuntimeHealthInlineRegistry(mod) {
-  const runtimeHealthPath = path.join(RAW_APP_DIR, 'backend', 'runtime_health.ts');
-  const existing = fs.readFileSync(runtimeHealthPath, 'utf8');
+  const inlineBlock = renderInlineRegistryBlock(mod);
   const blockRegex = /\/\/ \[AUTO-SYNCED-REGISTRY-START\][\s\S]*?\/\/ \[AUTO-SYNCED-REGISTRY-END\]/;
-  if (!blockRegex.test(existing)) {
-    throw new Error(
-      'uor_foundry.raw_app/backend/runtime_health.ts is missing // [AUTO-SYNCED-REGISTRY-START] ... // [AUTO-SYNCED-REGISTRY-END] markers.'
-    );
+  for (const filename of ['runtime_health.ts', 'job_status.ts']) {
+    const filePath = path.join(RAW_APP_DIR, 'backend', filename);
+    const existing = fs.readFileSync(filePath, 'utf8');
+    if (!blockRegex.test(existing)) {
+      throw new Error(
+        `uor_foundry.raw_app/backend/${filename} is missing // [AUTO-SYNCED-REGISTRY-START] ... // [AUTO-SYNCED-REGISTRY-END] markers.`
+      );
+    }
+    const updated = existing.replace(blockRegex, inlineBlock);
+    fs.writeFileSync(filePath, updated, 'utf8');
   }
-  const updated = existing.replace(blockRegex, renderInlineRegistryBlock(mod));
-  fs.writeFileSync(runtimeHealthPath, updated, 'utf8');
 }
 
 const BACKEND_RUNNABLE_FILES = [
@@ -330,14 +333,16 @@ async function validate(registryMod) {
     throw new Error('Drift detected in uor_foundry.raw_app/backend/generated_command_registry.ts');
   }
 
-  // Verify runtime_health.ts has zero relative imports and matches canonical registry 1-to-1
-  const runtimeHealthSrc = fs.readFileSync(path.join(RAW_APP_DIR, 'backend', 'runtime_health.ts'), 'utf8');
-  if (!runtimeHealthSrc.includes(renderInlineRegistryBlock(registryMod))) {
-    throw new Error('Drift detected in uor_foundry.raw_app/backend/runtime_health.ts inline registry block');
-  }
+  // Verify runtime_health.ts and job_status.ts have zero relative imports and match canonical registry 1-to-1
   const relativeImportRegex = /(?:from|import)\s*['"](\.[^'"]+)['"]|import\(\s*['"](\.[^'"]+)['"]\s*\)/;
-  if (relativeImportRegex.test(runtimeHealthSrc)) {
-    throw new Error('uor_foundry.raw_app/backend/runtime_health.ts must not contain relative imports so it deploys cleanly in Windmill.');
+  for (const selfContainedFile of ['runtime_health.ts', 'job_status.ts']) {
+    const src = fs.readFileSync(path.join(RAW_APP_DIR, 'backend', selfContainedFile), 'utf8');
+    if (!src.includes(renderInlineRegistryBlock(registryMod))) {
+      throw new Error(`Drift detected in uor_foundry.raw_app/backend/${selfContainedFile} inline registry block`);
+    }
+    if (relativeImportRegex.test(src)) {
+      throw new Error(`uor_foundry.raw_app/backend/${selfContainedFile} must not contain relative imports so it deploys cleanly in Windmill.`);
+    }
   }
 
   // Verify all bundled standalone runnables in dist/windmill/ have zero relative imports

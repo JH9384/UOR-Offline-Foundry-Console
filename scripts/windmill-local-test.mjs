@@ -13,11 +13,13 @@ import { fileURLToPath } from 'node:url';
  * - Never commits, prints, or logs `WINDMILL_TOKEN` (redacts token from all diagnostics).
  * - Restricts target host strictly to loopback (`127.0.0.1` or `localhost`) so bearer tokens
  *   are never transmitted to remote hosts.
- * - Exercises only deployed read-only scripts:
+ * - Exercises deployed read-only scripts AND live read-only job listing/status APIs:
  *   1. `u/admin/worker_smoke_test`
  *   2. `u/admin/runtime_health`
  *   3. `u/admin/intake_validate`
  *   4. `u/admin/job_status`
+ *   5. `GET /api/w/uor-offline-foundry/jobs/list` (live read-only job listing)
+ *   6. `GET /api/w/uor-offline-foundry/jobs_u/get/{jobId}` (live read-only job status & result)
  * - Does not invoke destructive operations, compiler dispatch, workflow execution,
  *   triggers, or production release.
  */
@@ -103,6 +105,50 @@ export async function invokeWindmillScript({
   } catch (err) {
     const safeMsg = redactToken(err instanceof Error ? err.message : String(err), token);
     throw new Error(`Network failure calling ${scriptPath} at ${origin}: ${safeMsg}`);
+  }
+
+  const rawText = await response.text();
+  let parsedBody = rawText;
+  if (rawText.trim().length > 0) {
+    try {
+      parsedBody = JSON.parse(rawText);
+    } catch {
+      parsedBody = rawText.trim();
+    }
+  }
+
+  return {
+    ok: response.ok,
+    status: response.status,
+    body: parsedBody,
+    rawText: redactToken(rawText, token),
+  };
+}
+
+export async function invokeWindmillReadOnlyGet({
+  baseUrl = DEFAULT_WINDMILL_BASE_URL,
+  token,
+  apiPath,
+  fetchImpl = globalThis.fetch,
+}) {
+  if (!token || typeof token !== 'string' || token.trim().length === 0) {
+    throw new Error('Missing required WINDMILL_TOKEN environment variable.');
+  }
+  const origin = validateLocalBaseUrl(baseUrl);
+  const endpoint = `${origin}${apiPath.startsWith('/') ? apiPath : `/${apiPath}`}`;
+
+  let response;
+  try {
+    response = await fetchImpl(endpoint, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token.trim()}`,
+        Accept: 'application/json',
+      },
+    });
+  } catch (err) {
+    const safeMsg = redactToken(err instanceof Error ? err.message : String(err), token);
+    throw new Error(`Network failure calling GET ${apiPath} at ${origin}: ${safeMsg}`);
   }
 
   const rawText = await response.text();
@@ -377,7 +423,7 @@ export async function runLocalWindmillAcceptanceSuite({
     }
   );
 
-  // 6. u/admin/job_status fails closed with UNAVAILABLE_UNCONFIGURED
+  // 6. u/admin/job_status fails closed with UNAVAILABLE_UNCONFIGURED when unconfigured
   await runCheck(
     '6. u/admin/job_status fails closed with UNAVAILABLE_UNCONFIGURED',
     async () => {
@@ -443,6 +489,56 @@ export async function runLocalWindmillAcceptanceSuite({
         throw new Error(`Expected status === "UNAUTHORIZED_WORKSPACE", received "${body.status}"`);
       }
       return `found=false, status=${body.status}`;
+    }
+  );
+
+  // 8. Live read-only job listing & status retrieval (GET /api/w/uor-offline-foundry/jobs/list + jobs_u/get/{id})
+  await runCheck(
+    '8. Live read-only job listing and status/result retrieval (GET jobs/list & jobs_u/get/{id})',
+    async () => {
+      const listRes = await invokeWindmillReadOnlyGet({
+        baseUrl: origin,
+        token,
+        apiPath: `/api/w/${encodeURIComponent(workspace)}/jobs/list?per_page=10`,
+        fetchImpl,
+      });
+      if (!listRes.ok) {
+        throw new Error(`GET jobs/list HTTP ${listRes.status}: ${listRes.rawText}`);
+      }
+      if (!Array.isArray(listRes.body) || listRes.body.length === 0) {
+        throw new Error('Expected non-empty array of recent jobs from Windmill jobs/list.');
+      }
+
+      const firstJob = listRes.body[0];
+      const latestJobId = String(firstJob?.id ?? '').trim();
+      if (!latestJobId) {
+        throw new Error('Expected valid job ID in first entry of Windmill jobs/list.');
+      }
+      if (firstJob.workspace_id && firstJob.workspace_id !== TARGET_WINDMILL_WORKSPACE) {
+        throw new Error(
+          `Expected workspace_id "${TARGET_WINDMILL_WORKSPACE}", received "${firstJob.workspace_id}"`
+        );
+      }
+
+      const getRes = await invokeWindmillReadOnlyGet({
+        baseUrl: origin,
+        token,
+        apiPath: `/api/w/${encodeURIComponent(workspace)}/jobs_u/get/${encodeURIComponent(latestJobId)}`,
+        fetchImpl,
+      });
+      if (!getRes.ok) {
+        throw new Error(`GET jobs_u/get/${latestJobId} HTTP ${getRes.status}: ${getRes.rawText}`);
+      }
+      const jobDetail = getRes.body;
+      if (!jobDetail || typeof jobDetail !== 'object' || String(jobDetail.id) !== latestJobId) {
+        throw new Error(`Job detail ID mismatch for ${latestJobId}: ${getRes.rawText}`);
+      }
+      if (jobDetail.workspace_id && jobDetail.workspace_id !== TARGET_WINDMILL_WORKSPACE) {
+        throw new Error(
+          `Job detail belongs to unauthorized workspace "${jobDetail.workspace_id}"`
+        );
+      }
+      return `listed=${listRes.body.length}, verifiedJobId=${latestJobId}`;
     }
   );
 

@@ -1,5 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, RefreshCw, Search } from 'lucide-react';
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  ChevronLeft,
+  ChevronRight,
+  RefreshCw,
+  Search,
+} from 'lucide-react';
 import {
   Bar,
   BarChart,
@@ -13,9 +21,11 @@ import {
 } from 'recharts';
 import {
   classifyWindmillJobEvidenceStage,
+  FailClosedLocalWindmillService,
   RecentJobRegistryState,
   WindmillExecutionService,
 } from '../../adapters/windmillExecutionService';
+import { createBrowserProxyWindmillTransport } from '../../adapters/windmillLocalReadOnlyAdapter';
 import { WINDMILL_TARGET_CONFIG } from '../../adapters/windmillAdapter';
 import { DEMO_WINDMILL_JOB_FIXTURES } from '../../data/seedFoundryData';
 import {
@@ -34,6 +44,7 @@ export interface JobRegistryPanelProps {
 
 export type StatusFilter = 'ALL' | 'RUNNING' | 'BUILT' | 'VERIFIED';
 export type TimestampSortOrder = 'desc' | 'asc';
+export type JobRegistrySourceIndicator = 'LIVE' | 'DEMO' | 'UNAVAILABLE';
 
 interface ClassifiedJobItem {
   job: WindmillJobRecord;
@@ -41,6 +52,7 @@ interface ClassifiedJobItem {
   statusLabel: string;
   timestampIso: string;
   timestampMs: number;
+  resultSummary: string;
   searchIndex: string;
 }
 
@@ -58,6 +70,16 @@ const STATE_BAR_COLORS: Record<RecentJobRegistryState, string> = {
   BLOCKED: '#fb7185',
 };
 
+function formatJobResultSummary(job: WindmillJobRecord): string {
+  if (job.structuredResult && Object.keys(job.structuredResult).length > 0) {
+    return JSON.stringify(job.structuredResult);
+  }
+  if (job.logs && job.logs.length > 0) {
+    return job.logs[job.logs.length - 1];
+  }
+  return 'UNAVAILABLE';
+}
+
 interface JobRegistryRowProps {
   item: ClassifiedJobItem;
   isSelected: boolean;
@@ -66,7 +88,7 @@ interface JobRegistryRowProps {
 
 const JobRegistryRow: React.FC<JobRegistryRowProps> = React.memo(
   ({ item, isSelected, onSelect }) => {
-    const { job, evidenceStage, statusLabel, timestampIso } = item;
+    const { job, evidenceStage, statusLabel, timestampIso, resultSummary } = item;
     return (
       <tr
         data-testid={`job-registry-row-${job.jobId}`}
@@ -88,7 +110,7 @@ const JobRegistryRow: React.FC<JobRegistryRowProps> = React.memo(
           <div className="flex items-center gap-2">
             <StatusTag value={evidenceStage} />
             <span className="font-mono text-[11px] text-slate-300">
-              {statusLabel}
+              {statusLabel} ({job.state})
             </span>
           </div>
         </td>
@@ -98,11 +120,28 @@ const JobRegistryRow: React.FC<JobRegistryRowProps> = React.memo(
         >
           {timestampIso}
         </td>
+        <td
+          data-testid={`job-registry-result-${job.jobId}`}
+          className="py-2.5 px-3 font-mono text-[11px] text-slate-300 max-w-[220px] truncate"
+          title={resultSummary}
+        >
+          {resultSummary}
+        </td>
         <td className="py-2.5 px-3 text-right font-mono text-[11px] whitespace-nowrap">
           {job.isSyntheticFixture ? (
-            <span className="text-amber-300">DEMO FIXTURE</span>
+            <span
+              data-testid={`job-registry-origin-${job.jobId}`}
+              className="inline-flex items-center px-1.5 py-0.5 rounded bg-amber-950/50 border border-amber-500/30 text-amber-300"
+            >
+              DEMO
+            </span>
           ) : (
-            <span className="text-emerald-300">LIVE WINDMILL</span>
+            <span
+              data-testid={`job-registry-origin-${job.jobId}`}
+              className="inline-flex items-center px-1.5 py-0.5 rounded bg-emerald-950/50 border border-emerald-500/30 text-emerald-300"
+            >
+              LIVE
+            </span>
           )}
         </td>
       </tr>
@@ -119,73 +158,176 @@ export const JobRegistryPanel: React.FC<JobRegistryPanelProps> = ({
   title = 'Recent Job Registry',
   initialPageSize = 50,
 }) => {
-  const defaultJobs = useMemo(
+  const isLocalServiceBound = windmillService?.mode === 'LOCAL';
+
+  const demoJobs = useMemo(
     () =>
-      initialJobs ??
-      (projectId
+      projectId
         ? DEMO_WINDMILL_JOB_FIXTURES.filter((j) => j.projectId === projectId)
-        : DEMO_WINDMILL_JOB_FIXTURES),
-    [initialJobs, projectId]
+        : DEMO_WINDMILL_JOB_FIXTURES,
+    [projectId]
   );
 
-  const [jobs, setJobs] = useState<WindmillJobRecord[]>(defaultJobs);
+  const initialRecordList = useMemo(() => {
+    if (initialJobs) return initialJobs;
+    // Never seed synthetic DEMO fixtures when bound to a LOCAL Windmill service
+    if (isLocalServiceBound) return [];
+    return demoJobs;
+  }, [initialJobs, isLocalServiceBound, demoJobs]);
+
+  const [sourceMode, setSourceMode] = useState<'DEMO' | 'LOCAL'>(
+    isLocalServiceBound ? 'LOCAL' : 'DEMO'
+  );
+  const [sourceIndicator, setSourceIndicator] =
+    useState<JobRegistrySourceIndicator>(() => {
+      if (initialJobs) {
+        return initialJobs.some((j) => !j.isSyntheticFixture) ? 'LIVE' : 'DEMO';
+      }
+      return isLocalServiceBound ? 'UNAVAILABLE' : 'DEMO';
+    });
+  const [jobs, setJobs] = useState<WindmillJobRecord[]>(initialRecordList);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
   const [sortOrder, setSortOrder] = useState<TimestampSortOrder>('desc');
   const [searchQuery, setSearchQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(initialPageSize);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(
-    defaultJobs[0]?.jobId ?? null
+    initialRecordList[0]?.jobId ?? null
   );
   const [diagnostic, setDiagnostic] =
     useState<WindmillConnectionDiagnostic | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
+  const defaultBrowserLocalService = useMemo(
+    () =>
+      new FailClosedLocalWindmillService(
+        'VITE_AUTHENTICATED_LOCAL_PROXY',
+        createBrowserProxyWindmillTransport()
+      ),
+    []
+  );
+
   useEffect(() => {
     if (initialJobs) {
       setJobs(initialJobs);
       setCurrentPage(1);
+      setSourceIndicator(
+        initialJobs.some((j) => !j.isSyntheticFixture) ? 'LIVE' : 'DEMO'
+      );
       if (initialJobs.length > 0 && !selectedJobId) {
         setSelectedJobId(initialJobs[0].jobId);
       }
     }
   }, [initialJobs, selectedJobId]);
 
-  const handleRefreshJobs = async () => {
-    if (!windmillService) {
-      const fallback = projectId
-        ? DEMO_WINDMILL_JOB_FIXTURES.filter((j) => j.projectId === projectId)
-        : DEMO_WINDMILL_JOB_FIXTURES;
-      setJobs(fallback);
-      setCurrentPage(1);
-      setDiagnostic({
-        timestamp: new Date().toISOString(),
-        endpoint: WINDMILL_TARGET_CONFIG.baseUrl,
-        workspace: WINDMILL_TARGET_CONFIG.workspace,
-        code: 'NOT_CONNECTED',
-        message:
-          'Displaying browser-local reference job fixtures. Live Windmill runtime (http://127.0.0.1:8080, workspace uor-offline-foundry) is NOT CONNECTED.',
-        browserNavigatorOnline:
-          typeof navigator !== 'undefined' ? navigator.onLine : false,
-      });
-      return;
-    }
+  const fetchLiveJobs = useCallback(
+    async (serviceToQuery: WindmillExecutionService) => {
+      setIsLoading(true);
+      try {
+        const response =
+          await serviceToQuery.listApprovedExecutionHistory(projectId);
+        if (!response.ok) {
+          // Strict fail-closed: never silently fall back to synthetic DEMO fixtures
+          setJobs([]);
+          setSelectedJobId(null);
+          setSourceIndicator('UNAVAILABLE');
+          setDiagnostic(
+            response.diagnostic ?? {
+              timestamp: new Date().toISOString(),
+              endpoint: WINDMILL_TARGET_CONFIG.baseUrl,
+              workspace: WINDMILL_TARGET_CONFIG.workspace,
+              code: 'NOT_CONNECTED',
+              message:
+                'Live Windmill job retrieval is UNAVAILABLE. Synthetic DEMO fixtures are suppressed in LOCAL mode.',
+              browserNavigatorOnline:
+                typeof navigator !== 'undefined' ? navigator.onLine : false,
+            }
+          );
+          return;
+        }
 
-    setIsLoading(true);
-    try {
-      const response = await windmillService.listApprovedExecutionHistory(projectId);
+        const liveRecords = response.records.filter(
+          (r) => !r.isSyntheticFixture
+        );
+        setJobs(liveRecords);
+        setCurrentPage(1);
+        setSourceIndicator('LIVE');
+        setDiagnostic(response.diagnostic ?? null);
+        setSelectedJobId(liveRecords[0]?.jobId ?? null);
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [projectId]
+  );
+
+  const handleRefreshJobs = useCallback(async () => {
+    if (windmillService) {
+      if (windmillService.mode === 'LOCAL') {
+        setSourceMode('LOCAL');
+        await fetchLiveJobs(windmillService);
+        return;
+      }
+      const response =
+        await windmillService.listApprovedExecutionHistory(projectId);
       setJobs(response.records);
       setCurrentPage(1);
+      setSourceIndicator('DEMO');
       setDiagnostic(response.diagnostic ?? null);
       if (response.records.length > 0) {
         setSelectedJobId(response.records[0].jobId);
       }
-    } finally {
-      setIsLoading(false);
+      return;
     }
-  };
 
-  // Precompute classification, numeric epoch timestamp, and lowercase search index once per jobs list
+    if (sourceMode === 'LOCAL') {
+      await fetchLiveJobs(defaultBrowserLocalService);
+      return;
+    }
+
+    setJobs(demoJobs);
+    setCurrentPage(1);
+    setSourceIndicator('DEMO');
+    setDiagnostic({
+      timestamp: new Date().toISOString(),
+      endpoint: WINDMILL_TARGET_CONFIG.baseUrl,
+      workspace: WINDMILL_TARGET_CONFIG.workspace,
+      code: 'NOT_CONNECTED',
+      message:
+        'Displaying browser-local DEMO job fixtures. Switch to LOCAL to query http://127.0.0.1:8080 (workspace uor-offline-foundry) via the server-side read-only adapter.',
+      browserNavigatorOnline:
+        typeof navigator !== 'undefined' ? navigator.onLine : false,
+    });
+  }, [
+    windmillService,
+    sourceMode,
+    fetchLiveJobs,
+    projectId,
+    defaultBrowserLocalService,
+    demoJobs,
+  ]);
+
+  const handleSwitchSourceMode = useCallback(
+    async (nextMode: 'DEMO' | 'LOCAL') => {
+      setSourceMode(nextMode);
+      setCurrentPage(1);
+      if (nextMode === 'DEMO') {
+        setJobs(demoJobs);
+        setSelectedJobId(demoJobs[0]?.jobId ?? null);
+        setSourceIndicator('DEMO');
+        setDiagnostic(null);
+      } else {
+        const targetSvc =
+          windmillService?.mode === 'LOCAL'
+            ? windmillService
+            : defaultBrowserLocalService;
+        await fetchLiveJobs(targetSvc);
+      }
+    },
+    [demoJobs, windmillService, defaultBrowserLocalService, fetchLiveJobs]
+  );
+
+  // Precompute classification, numeric epoch timestamp, result summary, and lowercase search index once per jobs list
   const classifiedJobs = useMemo<ClassifiedJobItem[]>(
     () =>
       jobs.map((job) => {
@@ -194,13 +336,15 @@ export const JobRegistryPanel: React.FC<JobRegistryPanelProps> = ({
         const timestampIso = job.completedAt ?? job.startedAt;
         const parsedMs = Date.parse(timestampIso);
         const timestampMs = Number.isNaN(parsedMs) ? 0 : parsedMs;
-        const searchIndex = `${job.jobId} ${job.workflowName} ${job.flowPath} ${statusLabel}`.toLowerCase();
+        const resultSummary = formatJobResultSummary(job);
+        const searchIndex = `${job.jobId} ${job.workflowName} ${job.flowPath} ${statusLabel} ${job.state} ${resultSummary}`.toLowerCase();
         return {
           job,
           evidenceStage,
           statusLabel,
           timestampIso,
           timestampMs,
+          resultSummary,
           searchIndex,
         };
       }),
@@ -313,26 +457,73 @@ export const JobRegistryPanel: React.FC<JobRegistryPanelProps> = ({
             <h2 className="font-display font-semibold text-sm text-slate-100">
               {title}
             </h2>
+            <span
+              data-testid="job-registry-mode-indicator"
+              className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono font-semibold border ${
+                sourceIndicator === 'LIVE'
+                  ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300'
+                  : sourceIndicator === 'DEMO'
+                    ? 'bg-amber-950/60 border-amber-500/40 text-amber-300'
+                    : 'bg-rose-950/60 border-rose-500/40 text-rose-300'
+              }`}
+            >
+              {sourceIndicator}
+            </span>
             <span aria-hidden="true">·</span>
             <span className="font-mono">Workspace: {WINDMILL_TARGET_CONFIG.workspace}</span>
             <span aria-hidden="true">·</span>
             <span className="font-mono">Endpoint: {WINDMILL_TARGET_CONFIG.baseUrl}</span>
           </div>
           <p className="text-xs text-slate-400 mt-0.5">
-            Read-only Windmill execution history distinguishing Running, Built, and Verified states. Compiler execution and production release remain disabled.
+            Read-only Windmill execution history distinguishing Running, Built, and Verified states. No silent fallback from LOCAL to DEMO; compiler execution and release remain disabled.
           </p>
         </div>
 
-        <button
-          type="button"
-          data-testid="job-registry-refresh-btn"
-          onClick={handleRefreshJobs}
-          disabled={isLoading}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#0B0F17] hover:bg-slate-800 border border-slate-700/80 rounded-md transition-colors disabled:opacity-50"
-        >
-          <RefreshCw className="w-3.5 h-3.5 text-blue-400" aria-hidden="true" />
-          <span>{isLoading ? 'Syncing...' : 'Refresh Job Registry'}</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <div
+            role="group"
+            aria-label="Job Registry source mode"
+            className="flex items-center gap-1 p-1 bg-[#0B0F17] border border-slate-800 rounded-md"
+          >
+            <button
+              type="button"
+              data-testid="job-registry-source-mode-demo"
+              aria-pressed={sourceMode === 'DEMO'}
+              onClick={() => void handleSwitchSourceMode('DEMO')}
+              className={`px-2 py-1 text-[11px] font-mono rounded transition-colors ${
+                sourceMode === 'DEMO'
+                  ? 'bg-amber-600/80 text-white'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              DEMO
+            </button>
+            <button
+              type="button"
+              data-testid="job-registry-source-mode-local"
+              aria-pressed={sourceMode === 'LOCAL'}
+              onClick={() => void handleSwitchSourceMode('LOCAL')}
+              className={`px-2 py-1 text-[11px] font-mono rounded transition-colors ${
+                sourceMode === 'LOCAL'
+                  ? 'bg-blue-600 text-white'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              LOCAL (127.0.0.1:8080)
+            </button>
+          </div>
+
+          <button
+            type="button"
+            data-testid="job-registry-refresh-btn"
+            onClick={() => void handleRefreshJobs()}
+            disabled={isLoading}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-200 bg-[#0B0F17] hover:bg-slate-800 border border-slate-700/80 rounded-md transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className="w-3.5 h-3.5 text-blue-400" aria-hidden="true" />
+            <span>{isLoading ? 'Syncing...' : 'Refresh Job Registry'}</span>
+          </button>
+        </div>
       </div>
 
       {diagnostic && (
@@ -539,6 +730,7 @@ export const JobRegistryPanel: React.FC<JobRegistryPanelProps> = ({
                       <ArrowUpDown className="w-3 h-3 text-slate-500" aria-hidden="true" />
                     </button>
                   </th>
+                  <th className="py-2.5 px-3">Result</th>
                   <th className="py-2.5 px-3 text-right">Origin</th>
                 </tr>
               </thead>
@@ -546,10 +738,13 @@ export const JobRegistryPanel: React.FC<JobRegistryPanelProps> = ({
                 {paginatedJobs.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={5}
-                      className="py-6 px-4 text-center font-mono text-slate-500"
+                      colSpan={6}
+                      data-testid="job-registry-empty-row"
+                      className="py-6 px-4 text-center font-mono text-slate-400"
                     >
-                      No Windmill jobs match the active filter.
+                      {sourceIndicator === 'UNAVAILABLE'
+                        ? 'UNAVAILABLE — Live Windmill job history is not connected or not yet queried. Synthetic DEMO fixtures are not shown in LOCAL mode.'
+                        : 'No Windmill jobs match the active filter.'}
                     </td>
                   </tr>
                 ) : (
@@ -633,17 +828,22 @@ export const JobRegistryPanel: React.FC<JobRegistryPanelProps> = ({
             <span className="text-slate-400">Selected Job:</span>
             <span className="text-slate-100">{selectedJobEntry.job.jobId}</span>
             <span aria-hidden="true">·</span>
+            <span>
+              Origin: {selectedJobEntry.job.isSyntheticFixture ? 'DEMO' : 'LIVE'}
+            </span>
+            <span aria-hidden="true">·</span>
             <span>Stage Classification: {selectedJobEntry.statusLabel}</span>
             <span aria-hidden="true">·</span>
             <span>Revision: {selectedJobEntry.job.sourceRevision}</span>
           </div>
-          <div className="text-slate-400 truncate max-w-xl">
-            {selectedJobEntry.job.logs[selectedJobEntry.job.logs.length - 1] ??
-              'No execution log lines recorded.'}
+          <div
+            data-testid="job-registry-selected-result"
+            className="text-slate-300 truncate max-w-xl"
+          >
+            Result: {selectedJobEntry.resultSummary}
           </div>
         </div>
       )}
     </section>
   );
 };
-
