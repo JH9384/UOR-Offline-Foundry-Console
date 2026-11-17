@@ -2,10 +2,18 @@ import React from 'react';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IntakeModal } from '../shared/components/IntakeModal';
+import { Sidebar } from '../shared/components/Sidebar';
+import { TopBar } from '../shared/components/TopBar';
 import { JobRegistryPanel } from '../shared/components/studio/JobRegistryPanel';
 import { SourceCompliancePanel } from '../shared/components/studio/SourceCompliancePanel';
+import { WorkspaceTopBar } from '../shared/components/studio/WorkspaceTopBar';
+import { ConnectionsView } from '../shared/components/views/ConnectionsView';
 import { OverviewView } from '../shared/components/views/OverviewView';
-import { FailClosedLocalWindmillService } from '../shared/adapters/windmillExecutionService';
+import {
+  classifyWindmillJobEvidenceStage,
+  evaluateWindmillReadOnlyConnectivity,
+  FailClosedLocalWindmillService,
+} from '../shared/adapters/windmillExecutionService';
 import {
   INITIAL_ACTIVITY,
   INITIAL_APPROVALS,
@@ -396,6 +404,367 @@ describe('UOR Project Templates, State Transitions & Studio Components (Vitest +
     expect(screen.getByTestId('job-registry-panel')).toBeTruthy();
     expect(screen.getByTestId('job-registry-pie-chart')).toBeTruthy();
     expect(screen.getByTestId('job-registry-table')).toBeTruthy();
+  });
+
+  it('reconciles Windmill connectivity across ConnectionsView, TopBar, Sidebar, and Runtime Boundary panel for connected, disconnected, and permission-denied states while keeping execution disabled and admin jobs unpromoted', async () => {
+    const calcProject = INITIAL_PROJECTS[0];
+
+    // 1. CONNECTED STATE: reachable, authenticated, permissionsValidated, and workspace === 'uor-offline-foundry'
+    const connectedService = new FailClosedLocalWindmillService(
+      'VITE_AUTHENTICATED_LOCAL_PROXY',
+      {
+        async probeHealth() {
+          return {
+            reachable: true,
+            workspace: 'uor-offline-foundry',
+            authenticated: true,
+            permissionsValidated: true,
+            registeredRunnables: [
+              'backend/runtime_health.ts',
+              'backend/intake_validate.ts',
+              'backend/job_status.ts',
+            ],
+            registeredFlows: [],
+            wmillContractStatus: 'LOCAL_PROXY_VALIDATED',
+            diagnosticMessage:
+              'Authenticated read-only connection to uor-offline-foundry verified.',
+          };
+        },
+        async fetchJobById() {
+          return { ok: false, code: 'NOT_CONNECTED', message: 'unused' };
+        },
+        async listJobs() {
+          return {
+            ok: true,
+            workspace: 'uor-offline-foundry',
+            records: [
+              {
+                jobId: 'wm-admin-smoke-001',
+                projectId: calcProject.id,
+                workflowId: 'wf-windmill-readonly',
+                workflowName: 'u/admin/worker_smoke_test',
+                flowPath: 'u/admin/worker_smoke_test',
+                flowVersion: 'live',
+                sourceRevision: 'uor-offline-foundry@live',
+                idempotencyKey: 'wm-live-smoke-001',
+                state: 'COMPLETED',
+                startedAt: '2026-03-29T12:00:00Z',
+                completedAt: '2026-03-29T12:00:01Z',
+                logs: ['Result: {"status":"RUNTIME_SMOKE_TEST_PASS"}'],
+                structuredResult: { status: 'RUNTIME_SMOKE_TEST_PASS' },
+                artifactRefs: [],
+                evidenceRefs: [],
+                retryAvailable: false,
+                isSyntheticFixture: false,
+                flowRegisteredInWorkspace: true,
+              },
+              {
+                jobId: 'wm-admin-health-002',
+                projectId: calcProject.id,
+                workflowId: 'wf-windmill-readonly',
+                workflowName: 'u/admin/runtime_health',
+                flowPath: 'u/admin/runtime_health',
+                flowVersion: 'live',
+                sourceRevision: 'uor-offline-foundry@live',
+                idempotencyKey: 'wm-live-health-002',
+                state: 'COMPLETED',
+                startedAt: '2026-03-29T12:01:00Z',
+                completedAt: '2026-03-29T12:01:01Z',
+                logs: ['Result: {"workspace":"uor-offline-foundry"}'],
+                structuredResult: {
+                  workspace: 'uor-offline-foundry',
+                  canonicalRegistryCommandCount: 16,
+                },
+                artifactRefs: [],
+                evidenceRefs: [],
+                retryAvailable: false,
+                isSyntheticFixture: false,
+                flowRegisteredInWorkspace: true,
+              },
+            ],
+          };
+        },
+      }
+    );
+
+    const connectedHealth = await connectedService.checkRuntimeHealth();
+    expect(evaluateWindmillReadOnlyConnectivity(connectedHealth).isReadOnlyConnected).toBe(true);
+
+    render(
+      <div>
+        <TopBar
+          activeSection="connections"
+          onOpenMobileMenu={vi.fn()}
+          onOpenIntake={vi.fn()}
+          windmillHealth={connectedHealth}
+        />
+        <Sidebar
+          activeSection="connections"
+          onSelectSection={vi.fn()}
+          mobileOpen={false}
+          onCloseMobile={vi.fn()}
+          blockedReleaseCount={2}
+          windmillHealth={connectedHealth}
+        />
+        <WorkspaceTopBar
+          activeProject={calcProject}
+          mode="chat"
+          onSelectMode={vi.fn()}
+          integrationMode="DEMO"
+          connectivityProfile="OFFLINE_ONLY"
+          browserOnline={true}
+          onSelectConnectivityProfile={vi.fn()}
+          operations={[]}
+          offlineQueue={[]}
+          storageDiagnostics={{
+            backend: 'localstorage-fallback',
+            indexedDbSupported: false,
+            operationCount: 0,
+            autoReplayPermitted: false,
+            isAuthoritativeDatabase: false,
+          }}
+          onPreviewAirGappedExport={vi.fn() as never}
+          onExportAirGappedBundle={vi.fn() as never}
+          onExportLocalBackup={vi.fn() as never}
+          onRestoreLocalBackup={vi.fn() as never}
+          onRetryQueuedItem={vi.fn()}
+          onClearOperations={vi.fn()}
+          onOpenQuickSwitcher={vi.fn()}
+          onOpenMobileMenu={vi.fn()}
+          onOpenAdvancedSection={vi.fn()}
+          windmillHealth={connectedHealth}
+        />
+        <ConnectionsView
+          connections={INITIAL_CONNECTIONS}
+          windmillService={connectedService}
+        />
+      </div>
+    );
+
+    // Header and inspector badges show LOCAL READ-ONLY CONNECTED
+    expect(screen.getByTestId('connections-header-status').textContent).toContain(
+      'LOCAL READ-ONLY CONNECTED'
+    );
+    expect(screen.getByTestId('inspector-health-badges').textContent).toContain(
+      'LOCAL READ-ONLY CONNECTED'
+    );
+
+    // Separate statuses for read-only connectivity, workflow dispatch, compiler execution, LM Studio, and release authority
+    expect(screen.getByTestId('status-readonly-connectivity').textContent).toContain(
+      'LOCAL READ-ONLY CONNECTED'
+    );
+    expect(screen.getByTestId('status-workflow-dispatch').textContent).toContain('DISABLED');
+    expect(screen.getByTestId('status-compiler-execution').textContent).toContain('DISABLED');
+    expect(screen.getByTestId('status-lm-studio').textContent).toContain('NOT CONNECTED');
+    expect(screen.getByTestId('status-release-authority').textContent).toContain(
+      'RELEASE BLOCKED'
+    );
+
+    // Probe button uses real authenticated local read-only health check, not simulation-only probe
+    fireEvent.click(screen.getByTestId('check-adapter-status-btn'));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByTestId('connections-probe-banner').textContent).toContain(
+      'LOCAL READ-ONLY CONNECTED'
+    );
+    expect(screen.getByTestId('connections-probe-banner').textContent).toContain(
+      'Workflow dispatch: DISABLED'
+    );
+
+    // Completed administrative jobs are NOT promoted to BUILT or VERIFIED
+    fireEvent.click(screen.getByTestId('fetch-recent-jobs-btn'));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByTestId('recent-jobs-running-count').textContent).toBe('0');
+    expect(screen.getByTestId('recent-jobs-built-count').textContent).toBe('0');
+    expect(screen.getByTestId('recent-jobs-verified-count').textContent).toBe('0');
+    expect(screen.getByTestId('recent-job-row-wm-admin-smoke-001').textContent).toContain(
+      'COMPLETED'
+    );
+    expect(screen.getByTestId('recent-job-row-wm-admin-smoke-001').textContent).toContain(
+      'BLOCKED'
+    );
+    expect(
+      classifyWindmillJobEvidenceStage({
+        jobId: 'wm-admin-intake-003',
+        projectId: calcProject.id,
+        workflowId: 'wf-windmill-readonly',
+        workflowName: 'u/admin/intake_validate',
+        flowPath: 'u/admin/intake_validate',
+        flowVersion: 'live',
+        sourceRevision: 'uor-offline-foundry@live',
+        idempotencyKey: 'wm-live-intake-003',
+        state: 'COMPLETED',
+        startedAt: '2026-03-29T12:02:00Z',
+        completedAt: '2026-03-29T12:02:01Z',
+        logs: [],
+        structuredResult: { valid: true, sideEffectsExecuted: false },
+        artifactRefs: [],
+        evidenceRefs: [],
+        retryAvailable: false,
+        isSyntheticFixture: false,
+        flowRegisteredInWorkspace: true,
+      })
+    ).toBe('BLOCKED');
+
+    // Consistent status semantics in Operations header (TopBar + Sidebar) and Runtime, Persistence & Sync Boundary panel
+    expect(
+      screen.getByTestId('operator-console-header-windmill-status').textContent
+    ).toContain('Windmill LOCAL READ-ONLY CONNECTED · Execution DISABLED');
+    expect(screen.getAllByTestId('sidebar-windmill-status')[0].textContent).toBe(
+      'LOCAL READ-ONLY CONNECTED'
+    );
+    fireEvent.click(screen.getByTestId('runtime-boundary-toggle-btn'));
+    expect(screen.getByTestId('runtime-boundary-windmill-status').textContent).toBe(
+      'LOCAL READ-ONLY CONNECTED'
+    );
+    expect(screen.getByTestId('runtime-boundary-dispatch-status').textContent).toBe(
+      'DISABLED'
+    );
+    expect(screen.getByTestId('runtime-boundary-lmstudio-status').textContent).toBe(
+      'NOT CONNECTED'
+    );
+    expect(screen.getByTestId('runtime-boundary-release-status').textContent).toBe(
+      'RELEASE BLOCKED'
+    );
+
+    cleanup();
+
+    // 2. DISCONNECTED STATE: reachable === false fails closed to NOT CONNECTED / UNAVAILABLE
+    const disconnectedService = new FailClosedLocalWindmillService(
+      'VITE_AUTHENTICATED_LOCAL_PROXY',
+      {
+        async probeHealth() {
+          return {
+            reachable: false,
+            workspace: 'uor-offline-foundry',
+            authenticated: false,
+            permissionsValidated: false,
+            diagnosticMessage: 'Local Windmill at http://127.0.0.1:8080 is unreachable.',
+          };
+        },
+        async fetchJobById() {
+          return { ok: false, code: 'NOT_CONNECTED', message: 'Unreachable' };
+        },
+      }
+    );
+    const disconnectedHealth = await disconnectedService.checkRuntimeHealth();
+
+    render(
+      <div>
+        <TopBar
+          activeSection="connections"
+          onOpenMobileMenu={vi.fn()}
+          onOpenIntake={vi.fn()}
+          windmillHealth={disconnectedHealth}
+        />
+        <WorkspaceTopBar
+          activeProject={calcProject}
+          mode="chat"
+          onSelectMode={vi.fn()}
+          integrationMode="DEMO"
+          connectivityProfile="OFFLINE_ONLY"
+          browserOnline={true}
+          onSelectConnectivityProfile={vi.fn()}
+          operations={[]}
+          offlineQueue={[]}
+          storageDiagnostics={{
+            backend: 'localstorage-fallback',
+            indexedDbSupported: false,
+            operationCount: 0,
+            autoReplayPermitted: false,
+            isAuthoritativeDatabase: false,
+          }}
+          onPreviewAirGappedExport={vi.fn() as never}
+          onExportAirGappedBundle={vi.fn() as never}
+          onExportLocalBackup={vi.fn() as never}
+          onRestoreLocalBackup={vi.fn() as never}
+          onRetryQueuedItem={vi.fn()}
+          onClearOperations={vi.fn()}
+          onOpenQuickSwitcher={vi.fn()}
+          onOpenMobileMenu={vi.fn()}
+          onOpenAdvancedSection={vi.fn()}
+          windmillHealth={disconnectedHealth}
+        />
+        <ConnectionsView
+          connections={INITIAL_CONNECTIONS}
+          windmillService={disconnectedService}
+        />
+      </div>
+    );
+
+    expect(screen.getByTestId('connections-header-status').textContent).toContain(
+      'NOT CONNECTED'
+    );
+    expect(screen.getByTestId('connections-header-status').textContent).toContain(
+      'UNAVAILABLE'
+    );
+    expect(screen.getByTestId('connections-header-status').textContent).not.toContain(
+      'LOCAL READ-ONLY CONNECTED'
+    );
+    expect(
+      screen.getByTestId('operator-console-header-windmill-status').textContent
+    ).toContain('Simulation Sandbox · Windmill NOT CONNECTED');
+    fireEvent.click(screen.getByTestId('runtime-boundary-toggle-btn'));
+    expect(screen.getByTestId('runtime-boundary-windmill-status').textContent).toBe(
+      'NOT CONNECTED'
+    );
+
+    cleanup();
+
+    // 3. PERMISSION-DENIED STATE: reachable === true, authenticated === true, permissionsValidated === false
+    // Must fail closed to NOT CONNECTED / UNAVAILABLE and never display ONLINE or LOCAL READ-ONLY CONNECTED
+    const permissionDeniedService = new FailClosedLocalWindmillService(
+      'VITE_AUTHENTICATED_LOCAL_PROXY',
+      {
+        async probeHealth() {
+          return {
+            reachable: true,
+            workspace: 'uor-offline-foundry',
+            authenticated: true,
+            permissionsValidated: false,
+            diagnosticMessage:
+              'HTTP 403 Forbidden: token lacks read permissions for workspace uor-offline-foundry.',
+          };
+        },
+        async fetchJobById() {
+          return { ok: false, code: 'AUTH_NOT_VALIDATED', message: 'Forbidden' };
+        },
+      }
+    );
+    const permissionDeniedHealth = await permissionDeniedService.checkRuntimeHealth();
+
+    render(
+      <ConnectionsView
+        connections={INITIAL_CONNECTIONS}
+        windmillService={permissionDeniedService}
+      />
+    );
+
+    expect(permissionDeniedHealth.reachable).toBe(true);
+    expect(permissionDeniedHealth.permissionsValidated).toBe(false);
+    expect(screen.getByTestId('connections-header-status').textContent).toContain(
+      'NOT CONNECTED'
+    );
+    expect(screen.getByTestId('connections-header-status').textContent).toContain(
+      'UNAVAILABLE'
+    );
+    expect(screen.getByTestId('connections-header-status').textContent).not.toContain(
+      'LOCAL READ-ONLY CONNECTED'
+    );
+    expect(screen.getByTestId('inspector-health-badges').textContent).toContain(
+      'UNAVAILABLE'
+    );
+    expect(screen.getByTestId('inspector-health-badges').textContent).not.toContain(
+      'ONLINE'
+    );
+
+    fireEvent.click(screen.getByTestId('check-adapter-status-btn'));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByTestId('connections-probe-banner').textContent).toContain(
+      'PERMISSION_DENIED_OR_UNAUTHENTICATED'
+    );
+    expect(screen.getByTestId('connections-probe-banner').textContent).toContain(
+      'HTTP 403 Forbidden'
+    );
   });
 });
 

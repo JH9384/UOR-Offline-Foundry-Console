@@ -85,6 +85,7 @@ import {
   SyncConflictRecord,
   VerificationSuiteRecord,
   WindmillExecutionRequest,
+  WindmillHealthStatus,
   WindmillJobRecord,
   WorkflowRun,
   WorkspaceMode,
@@ -242,6 +243,7 @@ export default function App() {
   const [browserOnline, setBrowserOnline] = useState<boolean>(() =>
     typeof navigator !== 'undefined' ? navigator.onLine : true
   );
+  const [windmillHealth, setWindmillHealth] = useState<WindmillHealthStatus | null>(null);
 
   // Async Chat provider state & cancellation controller
   const chatProvider = useMemo(() => new MockPreviewChatProvider(), []);
@@ -1843,6 +1845,7 @@ export default function App() {
               }}
               onOpenMobileMenu={() => setMobileMenuOpen(true)}
               onOpenAdvancedSection={openAdvancedSection}
+              windmillHealth={windmillHealth}
             />
 
             {operatorNotice && (
@@ -2020,6 +2023,7 @@ export default function App() {
             onCloseMobile={() => setMobileMenuOpen(false)}
             blockedReleaseCount={blockedReleaseCount}
             onReturnToStudio={() => setWorkspaceShell('studio')}
+            windmillHealth={windmillHealth}
           />
 
           <div className="flex-1 flex flex-col min-w-0 min-h-screen">
@@ -2027,6 +2031,7 @@ export default function App() {
               activeSection={activeSection}
               onOpenMobileMenu={() => setMobileMenuOpen(true)}
               onOpenIntake={() => setIntakeModalOpen(true)}
+              windmillHealth={windmillHealth}
             />
 
             <main className="flex-1 p-4 lg:p-6 max-w-[1440px] w-full mx-auto">
@@ -2112,7 +2117,10 @@ export default function App() {
               )}
 
               {activeSection === 'connections' && (
-                <ConnectionsView connections={INITIAL_CONNECTIONS} />
+                <ConnectionsView
+                  connections={INITIAL_CONNECTIONS}
+                  onHealthStatusChange={setWindmillHealth}
+                />
               )}
 
               {activeSection === 'repositories' && <RepositoriesView />}

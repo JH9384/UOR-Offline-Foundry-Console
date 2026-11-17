@@ -72,6 +72,7 @@ export const StatusTag: React.FC<StatusTagProps> = ({ value, className = '' }) =
     case 'VERIFIED':
     case 'APPROVED':
     case 'LOCAL':
+    case 'LOCAL READ-ONLY CONNECTED':
     case 'ONLINE':
     case 'SATISFIED':
       colorClasses =
@@ -104,6 +105,7 @@ export const StatusTag: React.FC<StatusTagProps> = ({ value, className = '' }) =
     case 'NOT VERIFIED':
     case 'UNVERIFIED':
     case 'BLOCKED':
+    case 'DISABLED':
     case 'RELEASE BLOCKED':
     case 'PENDING VERIFICATION':
     case 'Pending':
@@ -113,7 +115,7 @@ export const StatusTag: React.FC<StatusTagProps> = ({ value, className = '' }) =
     case 'UNTESTED':
       colorClasses = 'border-amber-500/35 bg-amber-950/35 text-amber-300';
       Icon =
-        value === 'BLOCKED' || value === 'RELEASE BLOCKED'
+        value === 'BLOCKED' || value === 'DISABLED' || value === 'RELEASE BLOCKED'
           ? Lock
           : value === 'Pending' || value === 'PENDING_REVIEW'
             ? Clock

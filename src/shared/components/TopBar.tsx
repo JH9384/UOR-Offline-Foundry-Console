@@ -1,6 +1,7 @@
 import React from 'react';
 import { Menu, Plus } from 'lucide-react';
-import { NavigationSectionId } from '../types/foundry';
+import { evaluateWindmillReadOnlyConnectivity } from '../adapters/windmillExecutionService';
+import { NavigationSectionId, WindmillHealthStatus } from '../types/foundry';
 
 const SECTION_TITLES: Record<NavigationSectionId, string> = {
   overview: 'Overview',
@@ -19,13 +20,17 @@ interface TopBarProps {
   activeSection: NavigationSectionId;
   onOpenMobileMenu: () => void;
   onOpenIntake: () => void;
+  windmillHealth?: WindmillHealthStatus | null;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
   activeSection,
   onOpenMobileMenu,
   onOpenIntake,
+  windmillHealth,
 }) => {
+  const connectivity = evaluateWindmillReadOnlyConnectivity(windmillHealth);
+
   return (
     <header className="h-14 px-4 lg:px-6 border-b border-slate-800/90 bg-[#0E131D] flex items-center justify-between gap-4 shrink-0">
       <div className="flex items-center gap-3 min-w-0">
@@ -51,8 +56,15 @@ export const TopBar: React.FC<TopBarProps> = ({
       </div>
 
       <div className="flex items-center gap-4 shrink-0">
-        <span className="hidden md:inline text-xs font-mono text-slate-400 whitespace-nowrap">
-          Simulation Sandbox · Windmill NOT CONNECTED
+        <span
+          data-testid="operator-console-header-windmill-status"
+          className={`hidden md:inline text-xs font-mono whitespace-nowrap ${
+            connectivity.isReadOnlyConnected ? 'text-emerald-300' : 'text-slate-400'
+          }`}
+        >
+          {connectivity.isReadOnlyConnected
+            ? 'Windmill LOCAL READ-ONLY CONNECTED · Execution DISABLED'
+            : 'Simulation Sandbox · Windmill NOT CONNECTED'}
         </span>
         <button
           type="button"
@@ -66,3 +78,4 @@ export const TopBar: React.FC<TopBarProps> = ({
     </header>
   );
 };
+

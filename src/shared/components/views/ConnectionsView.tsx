@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { RefreshCw, Search, Unplug } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { CheckCircle2, RefreshCw, Search, Unplug } from 'lucide-react';
 import {
   LEXLEAN_MCP_HOST_EFFECTS,
   WINDMILL_DEPLOYMENT_OPTIONS,
@@ -7,11 +7,11 @@ import {
 } from '../../adapters/windmillAdapter';
 import {
   classifyWindmillJobEvidenceStage,
+  evaluateWindmillReadOnlyConnectivity,
   FailClosedLocalWindmillService,
   WindmillExecutionService,
 } from '../../adapters/windmillExecutionService';
 import { createBrowserProxyWindmillTransport } from '../../adapters/windmillLocalReadOnlyAdapter';
-import { foundryService } from '../../services/foundryService';
 import {
   SystemConnectionRecord,
   WindmillConnectionDiagnostic,
@@ -23,6 +23,7 @@ import { StatusTag } from '../StatusTag';
 interface ConnectionsViewProps {
   connections: SystemConnectionRecord[];
   windmillService?: WindmillExecutionService;
+  onHealthStatusChange?: (health: WindmillHealthStatus) => void;
 }
 
 const PREPARED_WINDMILL_BACKEND_RUNNABLES = [
@@ -37,6 +38,7 @@ const PREPARED_WINDMILL_BACKEND_RUNNABLES = [
 export const ConnectionsView: React.FC<ConnectionsViewProps> = ({
   connections,
   windmillService,
+  onHealthStatusChange,
 }) => {
   const [probeMessage, setProbeMessage] = useState<string | null>(null);
   const defaultLocalService = useMemo(
@@ -48,7 +50,9 @@ export const ConnectionsView: React.FC<ConnectionsViewProps> = ({
     []
   );
   const localService = windmillService ?? defaultLocalService;
-  const [healthSnapshot, setHealthSnapshot] = useState<WindmillHealthStatus | null>(null);
+  const [healthSnapshot, setHealthSnapshot] = useState<WindmillHealthStatus | null>(
+    () => localService.getLastVerifiedHealth?.() ?? null
+  );
   const [lookupJobId, setLookupJobId] = useState('wm-job-calc-001');
   const [jobLookupResult, setJobLookupResult] = useState<
     | { ok: true; record: WindmillJobRecord }
@@ -61,11 +65,43 @@ export const ConnectionsView: React.FC<ConnectionsViewProps> = ({
     diagnostic?: WindmillConnectionDiagnostic;
   } | null>(null);
 
+  useEffect(() => {
+    let cancelled = false;
+    const cached = localService.getLastVerifiedHealth?.() ?? null;
+    if (cached) {
+      setHealthSnapshot(cached);
+      onHealthStatusChange?.(cached);
+    }
+    localService.checkRuntimeHealth().then((health) => {
+      if (!cancelled) {
+        setHealthSnapshot(health);
+        onHealthStatusChange?.(health);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [localService, onHealthStatusChange]);
+
+  const connectivity = useMemo(
+    () => evaluateWindmillReadOnlyConnectivity(healthSnapshot),
+    [healthSnapshot]
+  );
+
   const handleCheckConnection = async (name: string) => {
-    const res = foundryService.probeWindmillRuntime();
     const health = await localService.checkRuntimeHealth();
     setHealthSnapshot(health);
-    setProbeMessage(`${name}: ${res.reason}`);
+    onHealthStatusChange?.(health);
+    const evalState = evaluateWindmillReadOnlyConnectivity(health);
+    if (evalState.isReadOnlyConnected) {
+      setProbeMessage(
+        `${name}: LOCAL READ-ONLY CONNECTED (${health.workspace} @ ${health.endpoint}) — ${health.diagnosticMessage} [Workflow dispatch: DISABLED · Compiler execution: DISABLED · LM Studio: NOT CONNECTED · Release authority: RELEASE BLOCKED]`
+      );
+    } else {
+      setProbeMessage(
+        `${name}: NOT CONNECTED / ${evalState.availabilityBadge} (${evalState.failureKind}) — ${health.diagnosticMessage}`
+      );
+    }
   };
 
   const handleReadOnlyJobLookup = async (e: React.FormEvent) => {
@@ -94,34 +130,143 @@ export const ConnectionsView: React.FC<ConnectionsViewProps> = ({
     return { running, built, verified, total: records.length };
   }, [recentJobsResult]);
 
+  const reconciledConnections = useMemo(() => {
+    return connections.map((conn) => {
+      if (conn.id === 'conn-windmill') {
+        return {
+          ...conn,
+          status: connectivity.isReadOnlyConnected
+            ? ('LOCAL READ-ONLY CONNECTED' as const)
+            : ('NOT CONNECTED' as const),
+          authMode: connectivity.isReadOnlyConnected
+            ? 'Server-Side Bearer Token (Read-Only Validated for uor-offline-foundry)'
+            : conn.authMode,
+          diagnosticNote: connectivity.isReadOnlyConnected
+            ? 'Authenticated local read-only health and job retrieval verified. Workflow dispatch, compiler execution, and release authority remain disabled.'
+            : connectivity.diagnosticMessage,
+        };
+      }
+      return conn;
+    });
+  }, [connections, connectivity]);
+
   return (
     <div className="space-y-6">
-      <section className="bg-[#111827] border border-slate-800/90 rounded-lg p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-        <div className="space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="font-display font-semibold text-sm text-slate-100">
-              System Connections & Integration Adapters
-            </h2>
-            <StatusTag value="NOT CONNECTED" />
+      <section className="bg-[#111827] border border-slate-800/90 rounded-lg p-5 space-y-4">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div
+              className="flex flex-wrap items-center gap-2"
+              data-testid="connections-header-status"
+            >
+              <h2 className="font-display font-semibold text-sm text-slate-100">
+                System Connections &amp; Integration Adapters
+              </h2>
+              <StatusTag value={connectivity.primaryBadge} />
+              {!connectivity.isReadOnlyConnected &&
+                connectivity.availabilityBadge === 'UNAVAILABLE' && (
+                  <StatusTag value="UNAVAILABLE" />
+                )}
+            </div>
+            <p
+              className="text-xs text-slate-400 leading-relaxed max-w-3xl"
+              data-testid="connections-header-summary"
+            >
+              {connectivity.isReadOnlyConnected ? (
+                <>
+                  Authenticated local read-only connection confirmed for self-hosted Windmill (
+                  <span className="font-mono text-emerald-300">
+                    {WINDMILL_TARGET_CONFIG.baseUrl}
+                  </span>
+                  , workspace{' '}
+                  <span className="font-mono text-emerald-300">
+                    {WINDMILL_TARGET_CONFIG.workspace}
+                  </span>
+                  ). Workflow dispatch, compiler execution, LM Studio, and release authority remain separately gated and disabled.
+                </>
+              ) : (
+                <>
+                  Read-only Windmill connectivity fails closed to{' '}
+                  <span className="font-mono text-rose-300">NOT CONNECTED</span> /{' '}
+                  <span className="font-mono text-rose-300">UNAVAILABLE</span> unless{' '}
+                  <span className="font-mono">reachable</span>,{' '}
+                  <span className="font-mono">authenticated</span>,{' '}
+                  <span className="font-mono">permissionsValidated</span>, and workspace{' '}
+                  <span className="font-mono">{WINDMILL_TARGET_CONFIG.workspace}</span> are all confirmed at{' '}
+                  <span className="font-mono">{WINDMILL_TARGET_CONFIG.baseUrl}</span>.
+                </>
+              )}
+            </p>
           </div>
-          <p className="text-xs text-slate-400 leading-relaxed max-w-3xl">
-            All unconnected services explicitly display <span className="font-mono text-rose-300">NOT CONNECTED</span>. Future orchestration connects via adapter contracts to self-hosted Windmill (<span className="font-mono">{WINDMILL_TARGET_CONFIG.baseUrl}</span>, workspace <span className="font-mono">{WINDMILL_TARGET_CONFIG.workspace}</span>).
-          </p>
+
+          <button
+            type="button"
+            data-testid="check-adapter-status-btn"
+            onClick={() => handleCheckConnection('Windmill Target Probe')}
+            className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-medium text-slate-200 border border-slate-700 hover:border-slate-600 rounded-md transition-colors whitespace-nowrap shrink-0"
+          >
+            <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Check Adapter Status</span>
+          </button>
         </div>
 
-        <button
-          type="button"
-          onClick={() => handleCheckConnection('Windmill Target Probe')}
-          className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-medium text-slate-200 border border-slate-700 hover:border-slate-600 rounded-md transition-colors whitespace-nowrap shrink-0"
+        {/* Separate Subsystem Status Strip */}
+        <div
+          className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-2.5 pt-3 border-t border-slate-800/80 text-xs"
+          data-testid="connections-subsystem-status-strip"
         >
-          <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
-          <span>Check Adapter Status</span>
-        </button>
+          <div
+            className="p-2.5 bg-[#0B0F17] border border-slate-800 rounded flex items-center justify-between gap-2"
+            data-testid="status-readonly-connectivity"
+          >
+            <span className="text-slate-400">Read-Only Connectivity</span>
+            <StatusTag value={connectivity.readOnlyConnectivityStatus} />
+          </div>
+          <div
+            className="p-2.5 bg-[#0B0F17] border border-slate-800 rounded flex items-center justify-between gap-2"
+            data-testid="status-workflow-dispatch"
+          >
+            <span className="text-slate-400">Workflow Dispatch</span>
+            <StatusTag value={connectivity.workflowDispatchStatus} />
+          </div>
+          <div
+            className="p-2.5 bg-[#0B0F17] border border-slate-800 rounded flex items-center justify-between gap-2"
+            data-testid="status-compiler-execution"
+          >
+            <span className="text-slate-400">Compiler Execution</span>
+            <StatusTag value={connectivity.compilerExecutionStatus} />
+          </div>
+          <div
+            className="p-2.5 bg-[#0B0F17] border border-slate-800 rounded flex items-center justify-between gap-2"
+            data-testid="status-lm-studio"
+          >
+            <span className="text-slate-400">LM Studio</span>
+            <StatusTag value={connectivity.lmStudioStatus} />
+          </div>
+          <div
+            className="p-2.5 bg-[#0B0F17] border border-slate-800 rounded flex items-center justify-between gap-2"
+            data-testid="status-release-authority"
+          >
+            <span className="text-slate-400">Release Authority</span>
+            <StatusTag value={connectivity.releaseAuthorityStatus} />
+          </div>
+        </div>
       </section>
 
       {probeMessage && (
-        <div className="p-3.5 bg-[#111827] border border-rose-500/35 rounded-md text-xs text-rose-200 flex items-center gap-2">
-          <Unplug className="w-4 h-4 shrink-0 text-rose-400" aria-hidden="true" />
+        <div
+          data-testid="connections-probe-banner"
+          className={`p-3.5 bg-[#111827] border rounded-md text-xs flex items-center gap-2 ${
+            connectivity.isReadOnlyConnected
+              ? 'border-emerald-500/35 text-emerald-200'
+              : 'border-rose-500/35 text-rose-200'
+          }`}
+        >
+          {connectivity.isReadOnlyConnected ? (
+            <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" aria-hidden="true" />
+          ) : (
+            <Unplug className="w-4 h-4 shrink-0 text-rose-400" aria-hidden="true" />
+          )}
           <span>{probeMessage}</span>
         </div>
       )}
@@ -140,9 +285,9 @@ export const ConnectionsView: React.FC<ConnectionsViewProps> = ({
               Verifies read-only runtime health, runnable registrations, and generated <span className="font-mono">wmill.ts</span> contract in workspace <span className="font-mono">uor-offline-foundry</span> before enabling job dispatch.
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2" data-testid="inspector-health-badges">
             <StatusTag value="PREPARED" />
-            <StatusTag value={healthSnapshot?.reachable ? 'ONLINE' : 'NOT CONNECTED'} />
+            <StatusTag value={connectivity.availabilityBadge} />
           </div>
         </div>
 
@@ -218,7 +363,7 @@ export const ConnectionsView: React.FC<ConnectionsViewProps> = ({
                 Recent Job Registry (`uor-offline-foundry`)
               </div>
               <p className="text-[11px] text-slate-400 mt-0.5">
-                Retrieves real job execution history from the authenticated Windmill backend, explicitly distinguishing <span className="font-mono text-blue-300">RUNNING</span>, <span className="font-mono text-amber-300">BUILT</span>, and <span className="font-mono text-emerald-300">VERIFIED</span> job states.
+                Retrieves real job execution history from the authenticated Windmill backend, explicitly distinguishing <span className="font-mono text-blue-300">RUNNING</span>, <span className="font-mono text-amber-300">BUILT</span>, and <span className="font-mono text-emerald-300">VERIFIED</span> job states. Completed administrative jobs remain <span className="font-mono text-amber-300">BLOCKED</span> and are never promoted to <span className="font-mono">BUILT</span> or <span className="font-mono">VERIFIED</span>.
               </p>
             </div>
             <button
@@ -310,9 +455,10 @@ export const ConnectionsView: React.FC<ConnectionsViewProps> = ({
       </section>
 
       <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {connections.map((conn) => (
+        {reconciledConnections.map((conn) => (
           <article
             key={conn.id}
+            data-testid={`connection-card-${conn.id}`}
             className="bg-[#111827] border border-slate-800/90 rounded-lg p-5 space-y-3 flex flex-col justify-between"
           >
             <div className="space-y-3">
@@ -424,4 +570,3 @@ export const ConnectionsView: React.FC<ConnectionsViewProps> = ({
     </div>
   );
 };
-

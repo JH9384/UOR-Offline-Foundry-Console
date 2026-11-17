@@ -13,6 +13,7 @@ import {
   Upload,
   WifiOff,
 } from 'lucide-react';
+import { evaluateWindmillReadOnlyConnectivity } from '../../adapters/windmillExecutionService';
 import { DurableStorageDiagnostics } from '../../services/durableLocalStore';
 import { foundrySyncService } from '../../services/syncService';
 import {
@@ -23,6 +24,7 @@ import {
   NavigationSectionId,
   OfflineQueueItem,
   ProjectRecord,
+  WindmillHealthStatus,
   WorkspaceMode,
 } from '../../types/foundry';
 import { StatusTag } from '../StatusTag';
@@ -47,6 +49,7 @@ interface WorkspaceTopBarProps {
   onOpenQuickSwitcher: () => void;
   onOpenMobileMenu: () => void;
   onOpenAdvancedSection: (section: NavigationSectionId) => void;
+  windmillHealth?: WindmillHealthStatus | null;
 }
 
 const MODES: Array<{ id: WorkspaceMode; label: string; shortcut: string }> = [
@@ -87,6 +90,7 @@ export const WorkspaceTopBar: React.FC<WorkspaceTopBarProps> = ({
   onOpenQuickSwitcher,
   onOpenMobileMenu,
   onOpenAdvancedSection,
+  windmillHealth,
 }) => {
   const [runtimeOpen, setRuntimeOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -97,10 +101,12 @@ export const WorkspaceTopBar: React.FC<WorkspaceTopBarProps> = ({
   const [pendingRetryId, setPendingRetryId] = useState<string | null>(null);
   const restoreInputRef = useRef<HTMLInputElement | null>(null);
 
+  const windmillConnectivity = evaluateWindmillReadOnlyConnectivity(windmillHealth);
+
   const policy = foundrySyncService.evaluateConnectivityPolicy({
     profile: connectivityProfile,
-    integrationMode,
-    localWindmillValidated: false,
+    integrationMode: windmillConnectivity.isReadOnlyConnected ? 'LOCAL' : integrationMode,
+    localWindmillValidated: windmillConnectivity.isReadOnlyConnected,
     onlineAuthValidated: false,
   });
 
@@ -230,6 +236,7 @@ export const WorkspaceTopBar: React.FC<WorkspaceTopBarProps> = ({
 
         <button
           type="button"
+          data-testid="runtime-boundary-toggle-btn"
           onClick={() => {
             setRuntimeOpen((prev) => !prev);
             setShortcutsOpen(false);
@@ -238,12 +245,14 @@ export const WorkspaceTopBar: React.FC<WorkspaceTopBarProps> = ({
           className="inline-flex items-center gap-2 px-3 py-1.5 text-xs bg-[#111827] hover:bg-slate-800/90 border border-slate-700/80 rounded-md text-slate-200 transition-colors whitespace-nowrap shrink-0"
         >
           <WifiOff className="w-3.5 h-3.5 text-amber-400 shrink-0" aria-hidden="true" />
-          <span className="hidden sm:inline">
+          <span className="hidden sm:inline" data-testid="runtime-boundary-button-label">
             {connectivityProfile === 'AIR_GAPPED_TRANSFER'
               ? 'Air-Gapped'
-              : browserOnline
-                ? 'Runtime Offline'
-                : 'Browser Offline'}
+              : windmillConnectivity.isReadOnlyConnected
+                ? 'Local Read-Only'
+                : browserOnline
+                  ? 'Runtime Offline'
+                  : 'Browser Offline'}
           </span>
           {operations.length > 0 && (
             <span className="font-mono text-[11px] text-blue-300 tabular-nums">
@@ -253,7 +262,10 @@ export const WorkspaceTopBar: React.FC<WorkspaceTopBarProps> = ({
         </button>
 
         {runtimeOpen && (
-          <div className="absolute right-0 top-11 w-96 max-w-[calc(100vw-2rem)] max-h-[82vh] overflow-y-auto bg-[#111827] border border-slate-700/80 rounded-lg p-4 space-y-3.5 shadow-xl z-40">
+          <div
+            data-testid="runtime-boundary-panel"
+            className="absolute right-0 top-11 w-96 max-w-[calc(100vw-2rem)] max-h-[82vh] overflow-y-auto bg-[#111827] border border-slate-700/80 rounded-lg p-4 space-y-3.5 shadow-xl z-40"
+          >
             <div className="flex items-center justify-between pb-2.5 border-b border-slate-800">
               <span className="text-xs font-semibold text-slate-100">
                 Runtime, Persistence &amp; Sync Boundary
@@ -271,11 +283,41 @@ export const WorkspaceTopBar: React.FC<WorkspaceTopBarProps> = ({
             <dl className="space-y-1.5 text-xs">
               <div className="flex items-center justify-between gap-2">
                 <dt className="text-slate-400">Windmill (uor-offline-foundry)</dt>
-                <dd className="font-mono text-rose-300">NOT CONNECTED</dd>
+                <dd
+                  data-testid="runtime-boundary-windmill-status"
+                  className={`font-mono ${
+                    windmillConnectivity.isReadOnlyConnected ? 'text-emerald-300' : 'text-rose-300'
+                  }`}
+                >
+                  {windmillConnectivity.readOnlyConnectivityStatus}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <dt className="text-slate-400">Workflow Dispatch / Compiler</dt>
+                <dd
+                  data-testid="runtime-boundary-dispatch-status"
+                  className="font-mono text-amber-300"
+                >
+                  {windmillConnectivity.workflowDispatchStatus}
+                </dd>
               </div>
               <div className="flex items-center justify-between gap-2">
                 <dt className="text-slate-400">LM Studio (via Windmill)</dt>
-                <dd className="font-mono text-rose-300">NOT CONNECTED</dd>
+                <dd
+                  data-testid="runtime-boundary-lmstudio-status"
+                  className="font-mono text-rose-300"
+                >
+                  {windmillConnectivity.lmStudioStatus}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <dt className="text-slate-400">Release Authority</dt>
+                <dd
+                  data-testid="runtime-boundary-release-status"
+                  className="font-mono text-amber-300"
+                >
+                  {windmillConnectivity.releaseAuthorityStatus}
+                </dd>
               </div>
               <div className="flex items-center justify-between gap-2">
                 <dt className="text-slate-400">Browser Network (navigator)</dt>

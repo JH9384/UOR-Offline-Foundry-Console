@@ -13,7 +13,8 @@ import {
   ShieldCheck,
   X,
 } from 'lucide-react';
-import { NavigationSectionId } from '../types/foundry';
+import { evaluateWindmillReadOnlyConnectivity } from '../adapters/windmillExecutionService';
+import { NavigationSectionId, WindmillHealthStatus } from '../types/foundry';
 
 interface NavItem {
   id: NavigationSectionId;
@@ -42,6 +43,7 @@ interface SidebarProps {
   onCloseMobile: () => void;
   blockedReleaseCount: number;
   onReturnToStudio?: () => void;
+  windmillHealth?: WindmillHealthStatus | null;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -51,7 +53,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onCloseMobile,
   blockedReleaseCount,
   onReturnToStudio,
+  windmillHealth,
 }) => {
+  const connectivity = evaluateWindmillReadOnlyConnectivity(windmillHealth);
   const renderGroup = (group: NavItem['group'], title: string) => {
     const items = NAV_ITEMS.filter((item) => item.group === group);
     return (
@@ -146,10 +150,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
         <div className="flex items-center justify-between gap-2">
           <span className="text-slate-500">Windmill API</span>
-          <span className="font-mono text-rose-300">NOT CONNECTED</span>
+          <span
+            data-testid="sidebar-windmill-status"
+            className={`font-mono ${
+              connectivity.isReadOnlyConnected ? 'text-emerald-300' : 'text-rose-300'
+            }`}
+          >
+            {connectivity.readOnlyConnectivityStatus}
+          </span>
         </div>
         <div className="pt-1 text-slate-500 leading-relaxed">
-          Browser sandbox mode. No live compiler or release authority is active.
+          {connectivity.isReadOnlyConnected
+            ? 'Read-only local inspection active. No live compiler or release authority is active.'
+            : 'Browser sandbox mode. No live compiler or release authority is active.'}
         </div>
       </div>
     </div>

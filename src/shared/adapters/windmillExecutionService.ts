@@ -51,6 +51,7 @@ export interface WindmillExecutionService {
   readonly deploymentOption: WindmillDeploymentOption;
   readonly workspace: string;
 
+  getLastVerifiedHealth?(): WindmillHealthStatus | null;
   checkRuntimeHealth(): Promise<WindmillHealthStatus>;
   submitAuthorizedWorkflow(
     request: WindmillExecutionRequest
@@ -1511,3 +1512,93 @@ export function classifyWindmillJobEvidenceStage(
   }
   return 'BLOCKED';
 }
+
+export interface WindmillConnectivityEvaluation {
+  isReadOnlyConnected: boolean;
+  primaryBadge: 'LOCAL READ-ONLY CONNECTED' | 'NOT CONNECTED';
+  availabilityBadge: 'LOCAL READ-ONLY CONNECTED' | 'NOT CONNECTED' | 'UNAVAILABLE';
+  failureKind:
+    | 'NONE'
+    | 'UNPROBED'
+    | 'UNREACHABLE'
+    | 'PERMISSION_DENIED_OR_UNAUTHENTICATED'
+    | 'UNAUTHORIZED_WORKSPACE';
+  readOnlyConnectivityStatus: 'LOCAL READ-ONLY CONNECTED' | 'NOT CONNECTED';
+  workflowDispatchStatus: 'DISABLED';
+  compilerExecutionStatus: 'DISABLED';
+  lmStudioStatus: 'NOT CONNECTED';
+  releaseAuthorityStatus: 'RELEASE BLOCKED';
+  workspace: string;
+  endpoint: string;
+  diagnosticMessage: string;
+}
+
+/**
+ * Evaluates Windmill connectivity strictly from the authenticated local read-only health check.
+ * Shows `LOCAL READ-ONLY CONNECTED` ONLY when `reachable`, `authenticated`, `permissionsValidated`,
+ * and `workspace === 'uor-offline-foundry'` are all confirmed. Otherwise fails closed to
+ * `NOT CONNECTED` / `UNAVAILABLE`. Keeps separate statuses for read-only connectivity,
+ * workflow dispatch, compiler execution, LM Studio, and release authority.
+ */
+export function evaluateWindmillReadOnlyConnectivity(
+  health?: WindmillHealthStatus | null
+): WindmillConnectivityEvaluation {
+  const isReadOnlyConnected = Boolean(
+    health &&
+      health.reachable === true &&
+      health.authenticated === true &&
+      health.permissionsValidated === true &&
+      health.workspace === ALLOWED_WINDMILL_WORKSPACE
+  );
+
+  if (isReadOnlyConnected && health) {
+    return {
+      isReadOnlyConnected: true,
+      primaryBadge: 'LOCAL READ-ONLY CONNECTED',
+      availabilityBadge: 'LOCAL READ-ONLY CONNECTED',
+      failureKind: 'NONE',
+      readOnlyConnectivityStatus: 'LOCAL READ-ONLY CONNECTED',
+      workflowDispatchStatus: 'DISABLED',
+      compilerExecutionStatus: 'DISABLED',
+      lmStudioStatus: 'NOT CONNECTED',
+      releaseAuthorityStatus: 'RELEASE BLOCKED',
+      workspace: health.workspace,
+      endpoint: health.endpoint,
+      diagnosticMessage:
+        health.diagnosticMessage ||
+        `Authenticated local read-only connection verified for workspace "${ALLOWED_WINDMILL_WORKSPACE}". Workflow dispatch, compiler execution, LM Studio, and release authority remain disabled.`,
+    };
+  }
+
+  let failureKind: WindmillConnectivityEvaluation['failureKind'] = 'UNPROBED';
+  let availabilityBadge: WindmillConnectivityEvaluation['availabilityBadge'] = 'NOT CONNECTED';
+
+  if (health) {
+    availabilityBadge = 'UNAVAILABLE';
+    if (!health.reachable) {
+      failureKind = 'UNREACHABLE';
+    } else if (health.workspace !== ALLOWED_WINDMILL_WORKSPACE) {
+      failureKind = 'UNAUTHORIZED_WORKSPACE';
+    } else {
+      failureKind = 'PERMISSION_DENIED_OR_UNAUTHENTICATED';
+    }
+  }
+
+  return {
+    isReadOnlyConnected: false,
+    primaryBadge: 'NOT CONNECTED',
+    availabilityBadge,
+    failureKind,
+    readOnlyConnectivityStatus: 'NOT CONNECTED',
+    workflowDispatchStatus: 'DISABLED',
+    compilerExecutionStatus: 'DISABLED',
+    lmStudioStatus: 'NOT CONNECTED',
+    releaseAuthorityStatus: 'RELEASE BLOCKED',
+    workspace: health?.workspace || ALLOWED_WINDMILL_WORKSPACE,
+    endpoint: health?.endpoint || WINDMILL_TARGET_CONFIG.baseUrl,
+    diagnosticMessage:
+      health?.diagnosticMessage ||
+      `Windmill local read-only connectivity is NOT CONNECTED / UNAVAILABLE. Requires reachable endpoint (${WINDMILL_TARGET_CONFIG.baseUrl}), authenticated token, validated permissions, and workspace "${ALLOWED_WINDMILL_WORKSPACE}".`,
+  };
+}
+

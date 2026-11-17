@@ -17,7 +17,12 @@ export type EpistemicCondition = 'DOCUMENTED' | 'PROPOSED' | 'UNVERIFIED';
 
 export type VerificationStatus = 'PASS' | 'FAIL' | 'NOT RUN' | 'NOT VERIFIED';
 
-export type ConnectionStatus = 'NOT CONNECTED' | 'PENDING VERIFICATION';
+export type ConnectionStatus =
+  | 'NOT CONNECTED'
+  | 'PENDING VERIFICATION'
+  | 'LOCAL READ-ONLY CONNECTED'
+  | 'UNAVAILABLE'
+  | 'DISABLED';
 
 export type ProductFamily =
   | 'application'
