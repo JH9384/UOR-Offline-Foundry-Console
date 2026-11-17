@@ -766,5 +766,231 @@ describe('UOR Project Templates, State Transitions & Studio Components (Vitest +
       'HTTP 403 Forbidden'
     );
   });
+
+  it('validates intake locally in IntakeModal with LIVE VALIDATION, REJECTED, UNAVAILABLE, and DEMO outcomes while keeping Submit & Launch Simulated Workflow separate and sideEffectsExecuted:false', async () => {
+    const {
+      DemoWindmillExecutionService,
+      FailClosedLocalWindmillService: LocalService,
+    } = await import('../shared/adapters/windmillExecutionService');
+    const { main: intakeValidateMain } = await import(
+      '../../uor_foundry.raw_app/backend/intake_validate'
+    );
+
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const onClose = vi.fn();
+    let capturedInputs: unknown[] = [];
+
+    // 1. LIVE VALIDATION & REJECTED with live Windmill transport
+    const liveService = new LocalService('VITE_AUTHENTICATED_LOCAL_PROXY', {
+      async probeHealth() {
+        return {
+          reachable: true,
+          workspace: 'uor-offline-foundry',
+          authenticated: true,
+          permissionsValidated: true,
+        };
+      },
+      async fetchJobById() {
+        return { ok: false, code: 'NOT_CONNECTED', message: 'unused' };
+      },
+      async validateIntake(input) {
+        capturedInputs.push(input);
+        const res = await intakeValidateMain(input);
+        return {
+          ok: true,
+          outcome: res.valid ? 'LIVE VALIDATION' : 'REJECTED',
+          valid: res.valid,
+          errors: res.errors,
+          validatedAt: res.validatedAt,
+          sideEffectsExecuted: res.sideEffectsExecuted,
+          workspace: 'uor-offline-foundry',
+        };
+      },
+    });
+
+    render(
+      <IntakeModal
+        open={true}
+        onClose={onClose}
+        onSubmit={onSubmit}
+        windmillService={liveService}
+      />
+    );
+
+    // Both actions exist and remain distinctly labeled
+    const validateLocallyBtn = screen.getByTestId('validate-intake-locally-btn');
+    const submitSimulatedBtn = screen.getByTestId('submit-simulated-workflow-btn');
+    expect(validateLocallyBtn.textContent).toContain('Validate Intake Locally');
+    expect(submitSimulatedBtn.textContent).toContain(
+      'Submit & Launch Simulated Workflow'
+    );
+
+    // Click Validate Intake Locally with empty form -> REJECTED with field-level errors
+    fireEvent.click(validateLocallyBtn);
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByTestId('local-intake-validation-panel')).toBeTruthy();
+    expect(
+      screen.getByTestId('local-intake-validation-badge').textContent
+    ).toContain('REJECTED');
+    expect(screen.getByTestId('local-intake-validation-valid').textContent).toContain(
+      'valid: false'
+    );
+    expect(
+      screen.getByTestId('local-intake-side-effects').textContent
+    ).toContain('sideEffectsExecuted: false');
+    expect(screen.getByTestId('local-intake-validation-errors')).toBeTruthy();
+
+    // Select Prism Product template, fill Project Name, and click Validate Intake Locally -> LIVE VALIDATION
+    fireEvent.click(screen.getByTestId('template-prism-product'));
+    const nameInput = screen.getByLabelText(/Project Name \*/i) as HTMLInputElement;
+    fireEvent.change(nameInput, {
+      target: { value: 'Prism Calculator Live Validation' },
+    });
+
+    capturedInputs = [];
+    fireEvent.click(validateLocallyBtn);
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(capturedInputs).toHaveLength(1);
+    expect(capturedInputs[0]).toEqual({
+      projectName: 'Prism Calculator Live Validation',
+      productFamily: 'application',
+      componentId: 'prismpm-calculator',
+      workflowId: 'wf-prismpm-delivery',
+      purpose:
+        'Model a source-pinned Prism application with Diataxis doc stages, facet coverage, and uor/template-contract/1 packaging readiness.',
+      declaredInputs: 'devrel/subjects.json, app/src/Catalog.lex.tex, lexlean.lock',
+      environmentDeclaration:
+        'Sanitized Prism product simulation (replaces neither PrismPM nor LexLean SDK verification)',
+      sourceRevision: 'prism-devrel/main@8af99e96',
+      acknowledgeBoundary: true,
+    });
+
+    expect(
+      screen.getByTestId('local-intake-validation-badge').textContent
+    ).toContain('LIVE VALIDATION');
+    expect(screen.getByTestId('local-intake-validation-valid').textContent).toContain(
+      'valid: true'
+    );
+    expect(
+      screen.getByTestId('local-intake-side-effects').textContent
+    ).toContain('sideEffectsExecuted: false');
+    expect(
+      screen.getByTestId('local-intake-validation-timestamp').textContent
+    ).not.toContain('UNAVAILABLE');
+    expect(screen.queryByTestId('local-intake-validation-errors')).toBeNull();
+
+    cleanup();
+
+    // 2. UNAVAILABLE outcome when local Windmill proxy/worker is unreachable or lacks permission (never silently substitutes simulated validation)
+    const unavailableService = new LocalService(
+      'VITE_AUTHENTICATED_LOCAL_PROXY',
+      {
+        async probeHealth() {
+          return {
+            reachable: false,
+            workspace: 'uor-offline-foundry',
+            authenticated: false,
+            permissionsValidated: false,
+          };
+        },
+        async fetchJobById() {
+          return { ok: false, code: 'NOT_CONNECTED', message: 'offline' };
+        },
+        async validateIntake() {
+          return {
+            ok: false,
+            outcome: 'UNAVAILABLE',
+            valid: false,
+            errors: {},
+            validatedAt: null,
+            sideEffectsExecuted: false,
+            workspace: 'uor-offline-foundry',
+            diagnostic: {
+              timestamp: '2026-03-29T12:00:00.000Z',
+              endpoint: '/api/windmill/intake/validate',
+              workspace: 'uor-offline-foundry',
+              code: 'NOT_CONNECTED',
+              message:
+                'Local Windmill proxy (/api/windmill/intake/validate) is unreachable. Live intake validation is UNAVAILABLE.',
+              browserNavigatorOnline: true,
+            },
+          };
+        },
+      }
+    );
+
+    render(
+      <IntakeModal
+        open={true}
+        onClose={onClose}
+        onSubmit={onSubmit}
+        windmillService={unavailableService}
+      />
+    );
+
+    fireEvent.click(screen.getByTestId('template-prism-product'));
+    fireEvent.change(screen.getByLabelText(/Project Name \*/i), {
+      target: { value: 'Prism Calculator Offline Check' },
+    });
+    fireEvent.click(screen.getByTestId('validate-intake-locally-btn'));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(
+      screen.getByTestId('local-intake-validation-badge').textContent
+    ).toContain('UNAVAILABLE');
+    expect(
+      screen.getByTestId('local-intake-validation-badge').textContent
+    ).not.toContain('LIVE VALIDATION');
+    expect(
+      screen.getByTestId('local-intake-validation-badge').textContent
+    ).not.toContain('DEMO');
+    expect(screen.getByTestId('local-intake-validation-valid').textContent).toContain(
+      'valid: false'
+    );
+    expect(
+      screen.getByTestId('local-intake-side-effects').textContent
+    ).toContain('sideEffectsExecuted: false');
+    expect(
+      screen.getByTestId('local-intake-validation-diagnostic').textContent
+    ).toContain('UNAVAILABLE');
+
+    cleanup();
+
+    // 3. DemoWindmillExecutionService refuses to silently substitute simulated validation (returns UNAVAILABLE), and explicit DEMO outcome is distinctly badged when provided
+    const demoService = new DemoWindmillExecutionService({
+      fixtures: [],
+      verifications: [],
+      artifacts: [],
+    });
+    render(
+      <IntakeModal
+        open={true}
+        onClose={onClose}
+        onSubmit={onSubmit}
+        windmillService={demoService}
+      />
+    );
+    fireEvent.click(screen.getByTestId('template-prism-product'));
+    fireEvent.change(screen.getByLabelText(/Project Name \*/i), {
+      target: { value: 'Prism Calculator Demo Check' },
+    });
+    fireEvent.click(screen.getByTestId('validate-intake-locally-btn'));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(
+      screen.getByTestId('local-intake-validation-badge').textContent
+    ).toContain('UNAVAILABLE');
+    expect(
+      screen.getByTestId('local-intake-validation-diagnostic').textContent
+    ).toContain('never silently substituted');
+    expect(
+      screen.getByTestId('local-intake-side-effects').textContent
+    ).toContain('sideEffectsExecuted: false');
+  });
 });
+
 

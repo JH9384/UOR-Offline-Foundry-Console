@@ -542,6 +542,121 @@ export async function runLocalWindmillAcceptanceSuite({
     }
   );
 
+  // 9. Browser-to-proxy-to-Windmill POST /api/windmill/intake/validate path (LIVE VALIDATION, REJECTED, & proxy security guards)
+  await runCheck(
+    '9. Browser-to-proxy-to-Windmill POST /api/windmill/intake/validate path (valid LIVE VALIDATION, invalid REJECTED, and proxy guards)',
+    async () => {
+      const dispatchProxyRequest = async ({ method = 'POST', url = '/api/windmill/intake/validate', bodyObj }) => {
+        if (url === '/api/windmill/intake/validate' && method !== 'POST') {
+          return { statusCode: 405, outcome: 'UNAVAILABLE', sideEffectsExecuted: false };
+        }
+        if (url !== '/api/windmill/intake/validate' && method !== 'GET') {
+          return { statusCode: 405, outcome: 'UNAVAILABLE', sideEffectsExecuted: false };
+        }
+        const raw = typeof bodyObj === 'string' ? bodyObj : JSON.stringify(bodyObj ?? {});
+        if (Buffer.byteLength(raw, 'utf8') > 64 * 1024) {
+          return { statusCode: 413, outcome: 'REJECTED', sideEffectsExecuted: false };
+        }
+        const parsed = typeof bodyObj === 'object' && bodyObj !== null ? bodyObj : JSON.parse(raw);
+        if (parsed.scriptPath || parsed.flowPath || parsed.commandId) {
+          return { statusCode: 400, outcome: 'REJECTED', sideEffectsExecuted: false };
+        }
+        if (parsed.workspace && parsed.workspace !== TARGET_WINDMILL_WORKSPACE) {
+          return { statusCode: 403, outcome: 'UNAVAILABLE', sideEffectsExecuted: false };
+        }
+        const wmRes = await invokeWindmillScript({
+          baseUrl: origin,
+          workspace: TARGET_WINDMILL_WORKSPACE,
+          token,
+          scriptPath: DEPLOYED_READ_ONLY_SCRIPTS.intakeValidate,
+          args: { input: parsed, ...parsed },
+          fetchImpl,
+        });
+        if (!wmRes.ok || !wmRes.body || typeof wmRes.body !== 'object') {
+          return {
+            statusCode: wmRes.status === 401 || wmRes.status === 403 ? 403 : 503,
+            outcome: 'UNAVAILABLE',
+            sideEffectsExecuted: false,
+          };
+        }
+        const valid = wmRes.body.valid === true && Object.keys(wmRes.body.errors ?? {}).length === 0;
+        return {
+          statusCode: 200,
+          outcome: valid ? 'LIVE VALIDATION' : 'REJECTED',
+          valid,
+          errors: wmRes.body.errors ?? {},
+          validatedAt: wmRes.body.validatedAt,
+          sideEffectsExecuted: wmRes.body.sideEffectsExecuted,
+        };
+      };
+
+      const validProxyRes = await dispatchProxyRequest({
+        method: 'POST',
+        url: '/api/windmill/intake/validate',
+        bodyObj: VALID_INTAKE_FIXTURE,
+      });
+      if (
+        validProxyRes.statusCode !== 200 ||
+        validProxyRes.outcome !== 'LIVE VALIDATION' ||
+        validProxyRes.valid !== true ||
+        validProxyRes.sideEffectsExecuted !== false
+      ) {
+        throw new Error(
+          `Expected LIVE VALIDATION with sideEffectsExecuted=false for valid intake, received: ${JSON.stringify(validProxyRes)}`
+        );
+      }
+
+      const invalidProxyRes = await dispatchProxyRequest({
+        method: 'POST',
+        url: '/api/windmill/intake/validate',
+        bodyObj: INVALID_INTAKE_FIXTURE,
+      });
+      if (
+        invalidProxyRes.statusCode !== 200 ||
+        invalidProxyRes.outcome !== 'REJECTED' ||
+        invalidProxyRes.valid !== false ||
+        invalidProxyRes.sideEffectsExecuted !== false ||
+        Object.keys(invalidProxyRes.errors ?? {}).length === 0
+      ) {
+        throw new Error(
+          `Expected REJECTED with field errors and sideEffectsExecuted=false for invalid intake, received: ${JSON.stringify(invalidProxyRes)}`
+        );
+      }
+
+      const disallowedGetOnValidate = await dispatchProxyRequest({
+        method: 'GET',
+        url: '/api/windmill/intake/validate',
+        bodyObj: VALID_INTAKE_FIXTURE,
+      });
+      const disallowedPostOnJobs = await dispatchProxyRequest({
+        method: 'POST',
+        url: '/api/windmill/jobs',
+        bodyObj: VALID_INTAKE_FIXTURE,
+      });
+      const scriptOverrideAttempt = await dispatchProxyRequest({
+        method: 'POST',
+        url: '/api/windmill/intake/validate',
+        bodyObj: { ...VALID_INTAKE_FIXTURE, scriptPath: 'u/admin/workflow_dispatch' },
+      });
+      const badWorkspaceAttempt = await dispatchProxyRequest({
+        method: 'POST',
+        url: '/api/windmill/intake/validate',
+        bodyObj: { ...VALID_INTAKE_FIXTURE, workspace: 'unauthorized-ws' },
+      });
+
+      if (
+        disallowedGetOnValidate.statusCode !== 405 ||
+        disallowedPostOnJobs.statusCode !== 405 ||
+        scriptOverrideAttempt.statusCode !== 400 ||
+        badWorkspaceAttempt.statusCode !== 403
+      ) {
+        throw new Error('Proxy method, script-override, or workspace restriction check failed.');
+      }
+
+      return 'valid=LIVE VALIDATION, invalid=REJECTED, sideEffectsExecuted=false, guards=PASS';
+    }
+  );
+
   const passed = results.filter((r) => r.passed).length;
   const failed = results.filter((r) => !r.passed).length;
   const total = results.length;

@@ -1,5 +1,16 @@
-import React, { useState } from 'react';
-import { AlertCircle, X } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { AlertCircle, CheckCircle2, ShieldCheck, Unplug, X } from 'lucide-react';
+import {
+  FailClosedLocalWindmillService,
+  WindmillExecutionService,
+  WindmillIntakeValidationOutcome,
+  WindmillIntakeValidationResult,
+  WindmillSourcePackageSummaryInput,
+} from '../adapters/windmillExecutionService';
+import {
+  createBrowserProxyWindmillTransport,
+  mapEngineeringIntakeFormToValidationInput,
+} from '../adapters/windmillLocalReadOnlyAdapter';
 import { ENGINEERING_COMPONENTS, WORKFLOW_CATALOG } from '../data/seedFoundryData';
 import {
   foundryService,
@@ -20,6 +31,8 @@ interface IntakeModalProps {
   open: boolean;
   onClose: () => void;
   onSubmit: (payload: EngineeringIntakePayload) => Promise<void>;
+  windmillService?: WindmillExecutionService;
+  sourcePackage?: WindmillSourcePackageSummaryInput;
 }
 
 const DEFAULT_PAYLOAD: EngineeringIntakePayload = {
@@ -36,11 +49,32 @@ const DEFAULT_PAYLOAD: EngineeringIntakePayload = {
   lockfilesDeclared: ['prismpm.lock', 'lexlean.lock', 'standards.lock'],
 };
 
-export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmit }) => {
+export const IntakeModal: React.FC<IntakeModalProps> = ({
+  open,
+  onClose,
+  onSubmit,
+  windmillService,
+  sourcePackage,
+}) => {
   const [form, setForm] = useState<EngineeringIntakePayload>(DEFAULT_PAYLOAD);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [errors, setErrors] = useState<IntakeValidationErrors>({});
   const [submitting, setSubmitting] = useState(false);
+  const [validatingLocally, setValidatingLocally] = useState(false);
+  const [localValidationResult, setLocalValidationResult] =
+    useState<WindmillIntakeValidationResult | null>(null);
+  const [validationModeBadge, setValidationModeBadge] =
+    useState<WindmillIntakeValidationOutcome>('DEMO');
+
+  const defaultLocalService = useMemo(
+    () =>
+      new FailClosedLocalWindmillService(
+        'VITE_AUTHENTICATED_LOCAL_PROXY',
+        createBrowserProxyWindmillTransport()
+      ),
+    []
+  );
+  const localService = windmillService ?? defaultLocalService;
 
   if (!open) return null;
 
@@ -113,6 +147,7 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
       guidedPrompt: mode === 'GUIDED_PRODUCT' ? tpl.purpose : undefined,
     });
     setErrors({});
+    setLocalValidationResult(null);
   };
 
   const handleFillExample = () => {
@@ -138,10 +173,54 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
       lockfilesDeclared: ['prismpm.lock', 'lexlean.lock', 'standards.lock'],
     });
     setErrors({});
+    setLocalValidationResult(null);
+  };
+
+  /**
+   * Separate authenticated, non-executing local Windmill intake validation
+   * (`u/admin/intake_validate` via `POST /api/windmill/intake/validate`).
+   * Never silently substitutes simulated browser validation.
+   */
+  const handleValidateIntakeLocally = async () => {
+    setValidatingLocally(true);
+    try {
+      const mappedInput = mapEngineeringIntakeFormToValidationInput(form, sourcePackage);
+      if (typeof localService.validateIntakeLocally !== 'function') {
+        const unavailableRes: WindmillIntakeValidationResult = {
+          ok: false,
+          outcome: 'UNAVAILABLE',
+          valid: false,
+          errors: {},
+          validatedAt: null,
+          sideEffectsExecuted: false,
+          workspace: localService.workspace,
+          diagnostic: localService.reportConnectionFailure(
+            'NOT_CONNECTED',
+            'Local Windmill intake validation method is not configured on this service.'
+          ),
+        };
+        setLocalValidationResult(unavailableRes);
+        setValidationModeBadge('UNAVAILABLE');
+        return;
+      }
+
+      const result = await localService.validateIntakeLocally(mappedInput);
+      setLocalValidationResult(result);
+      setValidationModeBadge(result.outcome);
+
+      if (result.outcome === 'REJECTED') {
+        setErrors(result.errors);
+      } else if (result.outcome === 'LIVE VALIDATION') {
+        setErrors({});
+      }
+    } finally {
+      setValidatingLocally(false);
+    }
   };
 
   const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setValidationModeBadge('DEMO');
     const validationErrors = foundryService.validateIntake(form);
     if (Object.keys(validationErrors).length > 0) {
       setErrors(validationErrors);
@@ -153,6 +232,7 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
       setForm(DEFAULT_PAYLOAD);
       setSelectedTemplateId(null);
       setErrors({});
+      setLocalValidationResult(null);
       onClose();
     } finally {
       setSubmitting(false);
@@ -169,11 +249,16 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
       <div className="w-full max-w-2xl bg-[#111827] border border-slate-700/80 rounded-lg overflow-hidden max-h-[92vh] flex flex-col">
         <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between gap-4">
           <div>
-            <h2 id="intake-modal-title" className="font-display font-semibold text-base text-slate-100">
-              Synthetic Engineering Intake
-            </h2>
+            <div className="flex items-center gap-2">
+              <h2 id="intake-modal-title" className="font-display font-semibold text-base text-slate-100">
+                Synthetic Engineering Intake
+              </h2>
+              <span data-testid="intake-validation-mode-indicator">
+                <StatusTag value={validationModeBadge} />
+              </span>
+            </div>
             <p className="text-xs text-slate-400 mt-0.5">
-              Grounded in JH9384/UOR-Workflow product-intake template · Launches simulated workflow only
+              Grounded in JH9384/UOR-Workflow product-intake template · Supports non-executing local Windmill validation (<span className="font-mono">u/admin/intake_validate</span>) or simulated browser workflow
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -292,7 +377,10 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
                 className="w-full px-3 py-2 text-sm bg-[#0B0F17] border border-slate-700 rounded-md text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500"
               />
               {errors.projectName && (
-                <p className="mt-1 text-xs text-rose-400 flex items-center gap-1">
+                <p
+                  data-testid="intake-error-projectName"
+                  className="mt-1 text-xs text-rose-400 flex items-center gap-1"
+                >
                   <AlertCircle className="w-3 h-3 shrink-0" />
                   <span>{errors.projectName}</span>
                 </p>
@@ -372,7 +460,9 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
                 className="w-full px-3 py-2 text-sm font-mono bg-[#0B0F17] border border-slate-700 rounded-md text-slate-100 focus:outline-none focus:border-blue-500"
               />
               {errors.sourceRevision && (
-                <p className="mt-1 text-xs text-rose-400">{errors.sourceRevision}</p>
+                <p data-testid="intake-error-sourceRevision" className="mt-1 text-xs text-rose-400">
+                  {errors.sourceRevision}
+                </p>
               )}
             </div>
           </div>
@@ -389,7 +479,11 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
               placeholder="Describe the capability under evaluation without including restricted local logs."
               className="w-full px-3 py-2 text-sm bg-[#0B0F17] border border-slate-700 rounded-md text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500"
             />
-            {errors.purpose && <p className="mt-1 text-xs text-rose-400">{errors.purpose}</p>}
+            {errors.purpose && (
+              <p data-testid="intake-error-purpose" className="mt-1 text-xs text-rose-400">
+                {errors.purpose}
+              </p>
+            )}
           </div>
 
           {form.inputMode === 'GUIDED_PRODUCT' && (
@@ -427,7 +521,9 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
                 className="w-full px-3 py-2 text-sm font-mono bg-[#0B0F17] border border-slate-700 rounded-md text-slate-100 focus:outline-none focus:border-blue-500"
               />
               {errors.declaredInputs && (
-                <p className="mt-1 text-xs text-rose-400">{errors.declaredInputs}</p>
+                <p data-testid="intake-error-declaredInputs" className="mt-1 text-xs text-rose-400">
+                  {errors.declaredInputs}
+                </p>
               )}
             </div>
 
@@ -443,7 +539,12 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
                 className="w-full px-3 py-2 text-sm bg-[#0B0F17] border border-slate-700 rounded-md text-slate-100 focus:outline-none focus:border-blue-500"
               />
               {errors.environmentDeclaration && (
-                <p className="mt-1 text-xs text-rose-400">{errors.environmentDeclaration}</p>
+                <p
+                  data-testid="intake-error-environmentDeclaration"
+                  className="mt-1 text-xs text-rose-400"
+                >
+                  {errors.environmentDeclaration}
+                </p>
               )}
             </div>
           </div>
@@ -495,25 +596,131 @@ export const IntakeModal: React.FC<IntakeModalProps> = ({ open, onClose, onSubmi
               </span>
             </label>
             {errors.acknowledgeBoundary && (
-              <p className="mt-1.5 text-xs text-rose-400">{errors.acknowledgeBoundary}</p>
+              <p
+                data-testid="intake-error-acknowledgeBoundary"
+                className="mt-1.5 text-xs text-rose-400"
+              >
+                {errors.acknowledgeBoundary}
+              </p>
             )}
           </div>
 
-          <div className="pt-2 flex items-center justify-end gap-3 border-t border-slate-800">
+          {/* Structured Local Windmill Validation Outcome Panel */}
+          {localValidationResult && (
+            <div
+              data-testid="local-intake-validation-panel"
+              className={`p-3.5 bg-[#0B0F17] border rounded-md space-y-2 text-xs ${
+                localValidationResult.outcome === 'LIVE VALIDATION'
+                  ? 'border-emerald-500/40'
+                  : localValidationResult.outcome === 'REJECTED'
+                    ? 'border-rose-500/40'
+                    : 'border-amber-500/40'
+              }`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-1.5 border-b border-slate-800">
+                <div className="flex items-center gap-2 font-medium text-slate-100">
+                  {localValidationResult.outcome === 'LIVE VALIDATION' ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" aria-hidden="true" />
+                  ) : localValidationResult.outcome === 'REJECTED' ? (
+                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" aria-hidden="true" />
+                  ) : (
+                    <Unplug className="w-4 h-4 text-amber-400 shrink-0" aria-hidden="true" />
+                  )}
+                  <span>Local Windmill Intake Validation (`u/admin/intake_validate`)</span>
+                </div>
+                <span data-testid="local-intake-validation-badge">
+                  <StatusTag value={localValidationResult.outcome} />
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 font-mono text-[11px] text-slate-300">
+                <div data-testid="local-intake-validation-valid">
+                  valid:{' '}
+                  <span
+                    className={
+                      localValidationResult.valid ? 'text-emerald-300' : 'text-rose-300'
+                    }
+                  >
+                    {String(localValidationResult.valid)}
+                  </span>
+                </div>
+                <div data-testid="local-intake-side-effects">
+                  sideEffectsExecuted:{' '}
+                  <span className="text-sky-300">
+                    {String(localValidationResult.sideEffectsExecuted)}
+                  </span>
+                </div>
+                <div data-testid="local-intake-validation-timestamp" className="truncate">
+                  validatedAt: {localValidationResult.validatedAt ?? 'UNAVAILABLE'}
+                </div>
+              </div>
+
+              {(localValidationResult.sourcePackageValidated !== undefined ||
+                localValidationResult.verifiedFileCount !== undefined) && (
+                <div
+                  data-testid="local-intake-source-package-summary"
+                  className="font-mono text-[11px] text-slate-300"
+                >
+                  sourcePackageValidated: {String(localValidationResult.sourcePackageValidated)} ·
+                  verifiedFileCount: {localValidationResult.verifiedFileCount ?? 0}
+                </div>
+              )}
+
+              {localValidationResult.diagnostic && (
+                <div
+                  data-testid="local-intake-validation-diagnostic"
+                  className="font-mono text-[11px] text-amber-200"
+                >
+                  [{localValidationResult.diagnostic.code}] {localValidationResult.diagnostic.message}
+                </div>
+              )}
+
+              {Object.keys(localValidationResult.errors).length > 0 && (
+                <ul
+                  data-testid="local-intake-validation-errors"
+                  className="space-y-1 font-mono text-[11px] text-rose-300 pt-1 border-t border-slate-800/80"
+                >
+                  {Object.entries(localValidationResult.errors).map(([field, msg]) => (
+                    <li key={field}>
+                      [{field}] {msg}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-800">
             <button
               type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-xs font-medium text-slate-300 hover:text-white border border-slate-700 rounded-md transition-colors"
+              onClick={handleValidateIntakeLocally}
+              disabled={validatingLocally || submitting}
+              data-testid="validate-intake-locally-btn"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-emerald-200 bg-emerald-950/35 hover:bg-emerald-950/55 border border-emerald-500/40 disabled:opacity-50 rounded-md transition-colors"
             >
-              Cancel
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" aria-hidden="true" />
+              <span>
+                {validatingLocally ? 'Validating Locally...' : 'Validate Intake Locally'}
+              </span>
             </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="px-4 py-2 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-md transition-colors"
-            >
-              {submitting ? 'Submitting...' : 'Submit & Launch Simulated Workflow'}
-            </button>
+
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 text-xs font-medium text-slate-300 hover:text-white border border-slate-700 rounded-md transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={submitting}
+                data-testid="submit-simulated-workflow-btn"
+                className="px-4 py-2 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-md transition-colors"
+              >
+                {submitting ? 'Submitting...' : 'Submit & Launch Simulated Workflow'}
+              </button>
+            </div>
           </div>
         </form>
       </div>

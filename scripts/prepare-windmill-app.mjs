@@ -188,7 +188,7 @@ export const CANONICAL_COMMAND_IDS = ${JSON.stringify(commandIds, null, 2)} as c
 function syncRuntimeHealthInlineRegistry(mod) {
   const inlineBlock = renderInlineRegistryBlock(mod);
   const blockRegex = /\/\/ \[AUTO-SYNCED-REGISTRY-START\][\s\S]*?\/\/ \[AUTO-SYNCED-REGISTRY-END\]/;
-  for (const filename of ['runtime_health.ts', 'job_status.ts']) {
+  for (const filename of ['runtime_health.ts', 'intake_validate.ts', 'job_status.ts']) {
     const filePath = path.join(RAW_APP_DIR, 'backend', filename);
     const existing = fs.readFileSync(filePath, 'utf8');
     if (!blockRegex.test(existing)) {
@@ -333,9 +333,9 @@ async function validate(registryMod) {
     throw new Error('Drift detected in uor_foundry.raw_app/backend/generated_command_registry.ts');
   }
 
-  // Verify runtime_health.ts and job_status.ts have zero relative imports and match canonical registry 1-to-1
+  // Verify runtime_health.ts, intake_validate.ts, and job_status.ts have zero relative imports and match canonical registry 1-to-1
   const relativeImportRegex = /(?:from|import)\s*['"](\.[^'"]+)['"]|import\(\s*['"](\.[^'"]+)['"]\s*\)/;
-  for (const selfContainedFile of ['runtime_health.ts', 'job_status.ts']) {
+  for (const selfContainedFile of ['runtime_health.ts', 'intake_validate.ts', 'job_status.ts']) {
     const src = fs.readFileSync(path.join(RAW_APP_DIR, 'backend', selfContainedFile), 'utf8');
     if (!src.includes(renderInlineRegistryBlock(registryMod))) {
       throw new Error(`Drift detected in uor_foundry.raw_app/backend/${selfContainedFile} inline registry block`);

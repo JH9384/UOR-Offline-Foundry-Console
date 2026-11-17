@@ -1383,14 +1383,14 @@ describe('Phase A/B/C: Local Windmill Execution Client, Source-Package Handoff &
       });
 
       expect(passSummary.ok).toBe(true);
-      expect(passSummary.passed).toBe(8);
+      expect(passSummary.passed).toBe(9);
       expect(passSummary.failed).toBe(0);
-      expect(passSummary.total).toBe(8);
+      expect(passSummary.total).toBe(9);
       // Verify token is never printed in any log line
       expect(loggedLines.some((line) => line.includes(secretToken))).toBe(false);
       expect(
         loggedLines.some((line) =>
-          line.includes('[windmill:test] Summary: 8 passed, 0 failed, 8 total')
+          line.includes('[windmill:test] Summary: 9 passed, 0 failed, 9 total')
         )
       ).toBe(true);
 
@@ -1412,9 +1412,9 @@ describe('Phase A/B/C: Local Windmill Execution Client, Source-Package Handoff &
       });
 
       expect(failSummary.ok).toBe(false);
-      expect(failSummary.passed).toBe(7);
+      expect(failSummary.passed).toBe(8);
       expect(failSummary.failed).toBe(1);
-      expect(failSummary.total).toBe(8);
+      expect(failSummary.total).toBe(9);
       expect(failSummary.results[0].passed).toBe(false);
       expect(failSummary.results[0].detail).toContain('[REDACTED_WINDMILL_TOKEN]');
       expect(failSummary.results[0].detail).not.toContain(secretToken);
@@ -1604,7 +1604,269 @@ describe('Phase A/B/C: Local Windmill Execution Client, Source-Package Handoff &
     const proxyList = await unreachableProxy.listJobs!();
     expect(proxyList.ok).toBe(false);
   });
+
+  it('12. verifies POST /api/windmill/intake/validate proxy route, request sanitization, source-package digest/path rejection, permission/workspace checks, method restrictions, and zero side effects', async () => {
+    const {
+      createServerSideWindmillReadOnlyTransport,
+      createBrowserProxyWindmillTransport,
+      dispatchWindmillProxyRoute,
+      mapEngineeringIntakeFormToValidationInput,
+      validateAndSanitizeIntakeProxyRequest,
+      MAX_INTAKE_VALIDATE_BODY_BYTES,
+    } = await import('../shared/adapters/windmillLocalReadOnlyAdapter');
+
+    const serverSecret = 'wm_intake_proxy_secret_888';
+
+    const validFormInput = mapEngineeringIntakeFormToValidationInput({
+      projectName: 'Prism Calculator Qualification',
+      productFamily: 'PRISM_HOLO_APP',
+      componentId: 'prismpm-compiler',
+      workflowId: 'wf-prism-holo',
+      purpose:
+        'Non-executing Windmill intake validation for Calculator .lex.tex source package.',
+      declaredInputs: 'examples/Calculator/prismpm.toml, examples/Calculator/src/main.lex.tex',
+      environmentDeclaration: 'macOS arm64 / Windmill uor-offline-foundry read-only worker',
+      sourceRevision: 'prismpm/main@6c876017bffa0e770cffc2225cb2d2422c35a69a',
+      acknowledgeBoundary: true,
+    });
+
+    const invalidFormInput = mapEngineeringIntakeFormToValidationInput({
+      projectName: 'ab',
+      productFamily: 'PRISM_HOLO_APP',
+      componentId: 'prismpm-compiler',
+      workflowId: 'wf-prism-holo',
+      purpose: 'too short',
+      declaredInputs: '',
+      environmentDeclaration: '',
+      sourceRevision: 'bad',
+      acknowledgeBoundary: false,
+    });
+
+    // 1. Proxy method restrictions: POST allowed ONLY on /api/windmill/intake/validate
+    const dummyTransport = createServerSideWindmillReadOnlyTransport({
+      getToken: () => serverSecret,
+      fetchImpl: (async (inputUrl: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(inputUrl);
+        const auth = (init?.headers as Record<string, string>)?.Authorization;
+        if (auth !== `Bearer ${serverSecret}`) {
+          return new Response('Forbidden', { status: 403 });
+        }
+        if (
+          url ===
+          'http://127.0.0.1:8080/api/w/uor-offline-foundry/jobs/run_wait_result/p/u/admin/intake_validate'
+        ) {
+          expect(init?.method).toBe('POST');
+          expect(init?.redirect).toBe('error');
+          const parsedBody = JSON.parse(String(init?.body ?? '{}'));
+          const result = await intakeValidateMain(parsedBody);
+          return new Response(JSON.stringify(result), { status: 200 });
+        }
+        return new Response('Not found', { status: 404 });
+      }) as typeof fetch,
+    });
+
+    // GET on /api/windmill/intake/validate is rejected with 405
+    const getOnValidate = await dispatchWindmillProxyRoute({
+      method: 'GET',
+      url: '/api/windmill/intake/validate',
+      transport: dummyTransport,
+    });
+    expect(getOnValidate.statusCode).toBe(405);
+    expect(getOnValidate.body.sideEffectsExecuted).toBe(false);
+
+    // POST on /api/windmill/health, /api/windmill/jobs, or arbitrary dispatch routes is rejected with 405
+    for (const disallowedPostUrl of [
+      '/api/windmill/health',
+      '/api/windmill/jobs',
+      '/api/windmill/jobs/123',
+      '/api/windmill/dispatch',
+    ]) {
+      const res = await dispatchWindmillProxyRoute({
+        method: 'POST',
+        url: disallowedPostUrl,
+        rawBody: JSON.stringify(validFormInput),
+        transport: dummyTransport,
+      });
+      expect(res.statusCode).toBe(405);
+    }
+
+    // 2. Malformed payloads, size limits, arbitrary script overrides, and wrong workspace
+    expect(validateAndSanitizeIntakeProxyRequest('').ok).toBe(false);
+    expect(validateAndSanitizeIntakeProxyRequest('{not-json').ok).toBe(false);
+    expect(validateAndSanitizeIntakeProxyRequest('[]').ok).toBe(false);
+
+    const oversizedBody = JSON.stringify({
+      ...validFormInput,
+      purpose: 'x'.repeat(MAX_INTAKE_VALIDATE_BODY_BYTES + 100),
+    });
+    const oversizedRes = await dispatchWindmillProxyRoute({
+      method: 'POST',
+      url: '/api/windmill/intake/validate',
+      rawBody: oversizedBody,
+      transport: dummyTransport,
+    });
+    expect(oversizedRes.statusCode).toBe(413);
+    expect(oversizedRes.body.outcome).toBe('REJECTED');
+    expect(oversizedRes.body.sideEffectsExecuted).toBe(false);
+
+    const scriptOverrideRes = await dispatchWindmillProxyRoute({
+      method: 'POST',
+      url: '/api/windmill/intake/validate',
+      rawBody: JSON.stringify({
+        ...validFormInput,
+        scriptPath: 'u/admin/workflow_dispatch',
+      }),
+      transport: dummyTransport,
+    });
+    expect(scriptOverrideRes.statusCode).toBe(400);
+    expect(scriptOverrideRes.body.outcome).toBe('REJECTED');
+
+    const unknownFieldRes = await dispatchWindmillProxyRoute({
+      method: 'POST',
+      url: '/api/windmill/intake/validate',
+      rawBody: JSON.stringify({
+        ...validFormInput,
+        injectedUnexpectedField: true,
+      }),
+      transport: dummyTransport,
+    });
+    expect(unknownFieldRes.statusCode).toBe(400);
+    expect(unknownFieldRes.body.outcome).toBe('REJECTED');
+
+    const wrongWorkspaceRes = await dispatchWindmillProxyRoute({
+      method: 'POST',
+      url: '/api/windmill/intake/validate',
+      rawBody: JSON.stringify({
+        ...validFormInput,
+        workspace: 'unauthorized-workspace',
+      }),
+      transport: dummyTransport,
+    });
+    expect(wrongWorkspaceRes.statusCode).toBe(403);
+    expect(wrongWorkspaceRes.body.outcome).toBe('UNAVAILABLE');
+    expect(wrongWorkspaceRes.body.sideEffectsExecuted).toBe(false);
+
+    // 3. Full browser -> proxy -> server transport -> Windmill u/admin/intake_validate for valid & invalid intake
+    const browserProxyTransport = createBrowserProxyWindmillTransport({
+      fetchImpl: (async (inputUrl: RequestInfo | URL, init?: RequestInit) => {
+        const dispatched = await dispatchWindmillProxyRoute({
+          method: init?.method ?? 'GET',
+          url: String(inputUrl),
+          rawBody: init?.body ? String(init.body) : undefined,
+          transport: dummyTransport,
+        });
+        return new Response(JSON.stringify(dispatched.body), {
+          status: dispatched.statusCode,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }) as typeof fetch,
+    });
+
+    const proxyService = new FailClosedLocalWindmillService(
+      'VITE_AUTHENTICATED_LOCAL_PROXY',
+      browserProxyTransport
+    );
+
+    const validOutcome = await proxyService.validateIntakeLocally(validFormInput);
+    expect(validOutcome.ok).toBe(true);
+    expect(validOutcome.outcome).toBe('LIVE VALIDATION');
+    expect(validOutcome.valid).toBe(true);
+    expect(validOutcome.errors).toEqual({});
+    expect(validOutcome.validatedAt).toBeTruthy();
+    expect(validOutcome.sideEffectsExecuted).toBe(false);
+    expect(JSON.stringify(validOutcome)).not.toContain(serverSecret);
+
+    const invalidOutcome = await proxyService.validateIntakeLocally(invalidFormInput);
+    expect(invalidOutcome.ok).toBe(true);
+    expect(invalidOutcome.outcome).toBe('REJECTED');
+    expect(invalidOutcome.valid).toBe(false);
+    expect(invalidOutcome.sideEffectsExecuted).toBe(false);
+    expect(Object.keys(invalidOutcome.errors).length).toBeGreaterThanOrEqual(5);
+    expect(invalidOutcome.errors.projectName).toBeDefined();
+    expect(invalidOutcome.errors.purpose).toBeDefined();
+    expect(invalidOutcome.errors.acknowledgeBoundary).toBeDefined();
+
+    // 4. Source-package digest mismatch and unsafe path rejection through the live validation path
+    const validSha = 'a'.repeat(64);
+    const badSourcePkgInput = mapEngineeringIntakeFormToValidationInput(validFormInput, {
+      schema: 'uor.source-package.v1',
+      packageId: 'pkg-calc-1',
+      packageClassification: 'SOURCE_PACKAGE',
+      isHoloArchive: false,
+      reviewConfirmed: true,
+      targetWindmillWorkspace: 'uor-offline-foundry',
+      packageDigestSha256: validSha,
+      expectedPackageDigestSha256: 'b'.repeat(64), // Digest mismatch
+      lockfileRefs: ['examples/Calculator/prismpm.lock'],
+      files: [
+        {
+          path: '../outside/secret.lex.tex', // Unsafe path traversal
+          sha256: validSha,
+        },
+      ],
+    });
+
+    const badSourcePkgOutcome = await proxyService.validateIntakeLocally(badSourcePkgInput);
+    expect(badSourcePkgOutcome.ok).toBe(true);
+    expect(badSourcePkgOutcome.outcome).toBe('REJECTED');
+    expect(badSourcePkgOutcome.valid).toBe(false);
+    expect(badSourcePkgOutcome.sideEffectsExecuted).toBe(false);
+    expect(badSourcePkgOutcome.sourcePackageValidated).toBe(false);
+    expect(badSourcePkgOutcome.errors.sourcePackageHash).toBeDefined();
+    expect(badSourcePkgOutcome.errors.sourcePackagePath).toBeDefined();
+
+    const badFileHashInput = mapEngineeringIntakeFormToValidationInput(validFormInput, {
+      schema: 'uor.source-package.v1',
+      packageId: 'pkg-calc-1',
+      packageClassification: 'SOURCE_PACKAGE',
+      isHoloArchive: false,
+      reviewConfirmed: true,
+      targetWindmillWorkspace: 'uor-offline-foundry',
+      packageDigestSha256: validSha,
+      lockfileRefs: ['examples/Calculator/prismpm.lock'],
+      files: [
+        {
+          path: 'examples/Calculator/src/main.lex.tex',
+          sha256: 'not-a-valid-sha256',
+        },
+      ],
+    });
+    const badFileHashOutcome = await proxyService.validateIntakeLocally(badFileHashInput);
+    expect(badFileHashOutcome.outcome).toBe('REJECTED');
+    expect(badFileHashOutcome.valid).toBe(false);
+    expect(badFileHashOutcome.errors.sourcePackageFileHash).toBeDefined();
+
+    // 5. Missing permission (403) and HTTP 3xx redirect rejection fail closed to UNAVAILABLE
+    const forbiddenTransport = createServerSideWindmillReadOnlyTransport({
+      getToken: () => 'bad_token',
+      fetchImpl: (async () => new Response('Forbidden', { status: 403 })) as typeof fetch,
+    });
+    const forbiddenRes = await dispatchWindmillProxyRoute({
+      method: 'POST',
+      url: '/api/windmill/intake/validate',
+      rawBody: JSON.stringify(validFormInput),
+      transport: forbiddenTransport,
+    });
+    expect(forbiddenRes.statusCode).toBe(403);
+    expect(forbiddenRes.body.outcome).toBe('UNAVAILABLE');
+    expect(forbiddenRes.body.sideEffectsExecuted).toBe(false);
+
+    const redirectTransport = createServerSideWindmillReadOnlyTransport({
+      getToken: () => serverSecret,
+      fetchImpl: (async () =>
+        new Response(null, {
+          status: 302,
+          headers: { Location: 'https://evil.example.com' },
+        })) as typeof fetch,
+    });
+    const redirectRes = await redirectTransport.validateIntake!(validFormInput);
+    expect(redirectRes.ok).toBe(false);
+    expect(redirectRes.outcome).toBe('UNAVAILABLE');
+    expect(redirectRes.sideEffectsExecuted).toBe(false);
+    expect(redirectRes.diagnostic?.message).toContain('Refused HTTP 302 redirect');
+  });
 });
+
 
 
 

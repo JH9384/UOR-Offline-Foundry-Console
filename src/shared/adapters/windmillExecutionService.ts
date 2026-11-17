@@ -53,6 +53,9 @@ export interface WindmillExecutionService {
 
   getLastVerifiedHealth?(): WindmillHealthStatus | null;
   checkRuntimeHealth(): Promise<WindmillHealthStatus>;
+  validateIntakeLocally?(
+    input: WindmillIntakeValidationInput
+  ): Promise<WindmillIntakeValidationResult>;
   submitAuthorizedWorkflow(
     request: WindmillExecutionRequest
   ): Promise<{ ok: true; job: WindmillJobIdentity } | { ok: false; diagnostic: WindmillConnectionDiagnostic }>;
@@ -69,6 +72,55 @@ export interface WindmillExecutionService {
     code: WindmillConnectionDiagnostic['code'],
     reason: string
   ): WindmillConnectionDiagnostic;
+}
+
+export interface WindmillSourcePackageSummaryInput {
+  schema: string;
+  packageId: string;
+  packageClassification: string;
+  isHoloArchive: boolean;
+  reviewConfirmed: boolean;
+  targetWindmillWorkspace: string;
+  packageDigestSha256: string;
+  expectedPackageDigestSha256?: string;
+  lockfileRefs: string[];
+  files: Array<{
+    path: string;
+    sha256: string;
+    expectedSha256?: string;
+  }>;
+}
+
+export interface WindmillIntakeValidationInput {
+  projectName: string;
+  productFamily: string;
+  componentId: string;
+  workflowId: string;
+  purpose: string;
+  declaredInputs: string;
+  environmentDeclaration: string;
+  sourceRevision: string;
+  acknowledgeBoundary: boolean;
+  sourcePackage?: WindmillSourcePackageSummaryInput;
+}
+
+export type WindmillIntakeValidationOutcome =
+  | 'LIVE VALIDATION'
+  | 'DEMO'
+  | 'UNAVAILABLE'
+  | 'REJECTED';
+
+export interface WindmillIntakeValidationResult {
+  ok: boolean;
+  outcome: WindmillIntakeValidationOutcome;
+  valid: boolean;
+  errors: Record<string, string>;
+  validatedAt: string | null;
+  sideEffectsExecuted: false;
+  workspace: string;
+  sourcePackageValidated?: boolean;
+  verifiedFileCount?: number;
+  diagnostic?: WindmillConnectionDiagnostic;
 }
 
 /**
@@ -107,6 +159,24 @@ export class DemoWindmillExecutionService implements WindmillExecutionService {
       checkedAt: new Date().toISOString(),
       diagnosticMessage:
         'Running in browser-local DEMO mode. Self-hosted Windmill (http://127.0.0.1:8080) is NOT CONNECTED and browser internet connectivity does not imply local runtime availability.',
+    };
+  }
+
+  async validateIntakeLocally(
+    _input: WindmillIntakeValidationInput
+  ): Promise<WindmillIntakeValidationResult> {
+    return {
+      ok: false,
+      outcome: 'UNAVAILABLE',
+      valid: false,
+      errors: {},
+      validatedAt: null,
+      sideEffectsExecuted: false,
+      workspace: this.workspace,
+      diagnostic: this.reportConnectionFailure(
+        'NOT_CONNECTED',
+        'Local Windmill intake validation (u/admin/intake_validate) is UNAVAILABLE in DEMO mode. Simulated browser validation is never silently substituted for live Windmill validation.'
+      ),
     };
   }
 
@@ -239,6 +309,9 @@ export interface WindmillReadOnlyJobFetchFailure {
 
 export interface WindmillReadOnlyRuntimeTransport {
   probeHealth(): Promise<WindmillReadOnlyHealthProbeResult>;
+  validateIntake?(
+    input: WindmillIntakeValidationInput
+  ): Promise<WindmillIntakeValidationResult>;
   fetchJobById(
     jobId: string
   ): Promise<WindmillReadOnlyJobFetchSuccess | WindmillReadOnlyJobFetchFailure>;
@@ -776,6 +849,44 @@ export class FailClosedLocalWindmillService implements WindmillExecutionService 
       ok: true,
       evidence: res.evidence,
     };
+  }
+
+  async validateIntakeLocally(
+    input: WindmillIntakeValidationInput
+  ): Promise<WindmillIntakeValidationResult> {
+    if (!this.transport || typeof this.transport.validateIntake !== 'function') {
+      return {
+        ok: false,
+        outcome: 'UNAVAILABLE',
+        valid: false,
+        errors: {},
+        validatedAt: null,
+        sideEffectsExecuted: false,
+        workspace: this.workspace,
+        diagnostic: this.reportConnectionFailure(
+          'NOT_CONNECTED',
+          'Local Windmill intake validation transport is not configured.'
+        ),
+      };
+    }
+
+    if (this.workspace !== ALLOWED_WINDMILL_WORKSPACE) {
+      return {
+        ok: false,
+        outcome: 'UNAVAILABLE',
+        valid: false,
+        errors: {},
+        validatedAt: null,
+        sideEffectsExecuted: false,
+        workspace: this.workspace,
+        diagnostic: this.reportConnectionFailure(
+          'AUTH_NOT_VALIDATED',
+          `Refused intake validation for unauthorized workspace "${this.workspace}".`
+        ),
+      };
+    }
+
+    return this.transport.validateIntake(input);
   }
 
   reportConnectionFailure(

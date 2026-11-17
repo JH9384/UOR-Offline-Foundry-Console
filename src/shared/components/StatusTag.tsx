@@ -49,7 +49,8 @@ type StatusValue =
   | 'SATISFIED'
   | 'GAP'
   | 'UNTESTED'
-  | 'REFUTED';
+  | 'REFUTED'
+  | 'LIVE VALIDATION';
 
 interface StatusTagProps {
   value: StatusValue;
@@ -73,6 +74,7 @@ export const StatusTag: React.FC<StatusTagProps> = ({ value, className = '' }) =
     case 'APPROVED':
     case 'LOCAL':
     case 'LOCAL READ-ONLY CONNECTED':
+    case 'LIVE VALIDATION':
     case 'ONLINE':
     case 'SATISFIED':
       colorClasses =

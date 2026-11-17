@@ -1,4 +1,5 @@
 import {
+  EngineeringIntakePayload,
   WindmillConnectionDiagnostic,
   WindmillJobRecord,
   WindmillJobState,
@@ -7,10 +8,13 @@ import { WINDMILL_TARGET_CONFIG } from './windmillAdapter';
 import { ALLOWED_WINDMILL_WORKSPACE } from './windmillCommandRegistry';
 import {
   REQUIRED_READONLY_RUNNABLES,
+  WindmillIntakeValidationInput,
+  WindmillIntakeValidationResult,
   WindmillReadOnlyHealthProbeResult,
   WindmillReadOnlyJobFetchFailure,
   WindmillReadOnlyJobFetchSuccess,
   WindmillReadOnlyRuntimeTransport,
+  WindmillSourcePackageSummaryInput,
 } from './windmillExecutionService';
 
 /**
@@ -61,6 +65,401 @@ export interface NormalizedLiveWindmillJob {
   sequence: number;
   updatedAt: string;
   record: WindmillJobRecord;
+}
+
+export const FIXED_INTAKE_VALIDATE_SCRIPT_PATH = 'u/admin/intake_validate' as const;
+export const MAX_INTAKE_VALIDATE_BODY_BYTES = 64 * 1024; // 64 KB strict limit
+
+const ALLOWED_INTAKE_INPUT_KEYS = new Set<string>([
+  'projectName',
+  'productFamily',
+  'componentId',
+  'workflowId',
+  'purpose',
+  'declaredInputs',
+  'environmentDeclaration',
+  'sourceRevision',
+  'acknowledgeBoundary',
+  'sourcePackage',
+]);
+
+const ALLOWED_SOURCE_PACKAGE_KEYS = new Set<string>([
+  'schema',
+  'packageId',
+  'packageClassification',
+  'isHoloArchive',
+  'reviewConfirmed',
+  'targetWindmillWorkspace',
+  'packageDigestSha256',
+  'expectedPackageDigestSha256',
+  'lockfileRefs',
+  'files',
+]);
+
+const ALLOWED_SOURCE_PACKAGE_FILE_KEYS = new Set<string>([
+  'path',
+  'sha256',
+  'expectedSha256',
+]);
+
+const FORBIDDEN_DISPATCH_OVERRIDE_KEYS = new Set<string>([
+  'scriptPath',
+  'script_path',
+  'flowPath',
+  'flow_path',
+  'runnable',
+  'commandId',
+  'rawCommandString',
+  'endpoint',
+  'url',
+  'token',
+  'authorization',
+]);
+
+/**
+ * Maps the existing `IntakeModal` form fields 1-to-1 to `WindmillIntakeValidationInput`
+ * without inventing missing fields or claiming authoritative source evidence.
+ */
+export function mapEngineeringIntakeFormToValidationInput(
+  form:
+    | Pick<
+        EngineeringIntakePayload,
+        | 'projectName'
+        | 'productFamily'
+        | 'componentId'
+        | 'workflowId'
+        | 'purpose'
+        | 'declaredInputs'
+        | 'environmentDeclaration'
+        | 'sourceRevision'
+        | 'acknowledgeBoundary'
+      >
+    | WindmillIntakeValidationInput,
+  sourcePackage?: WindmillSourcePackageSummaryInput
+): WindmillIntakeValidationInput {
+  return {
+    projectName: String(form.projectName ?? ''),
+    productFamily: String(form.productFamily ?? ''),
+    componentId: String(form.componentId ?? ''),
+    workflowId: String(form.workflowId ?? ''),
+    purpose: String(form.purpose ?? ''),
+    declaredInputs: String(form.declaredInputs ?? ''),
+    environmentDeclaration: String(form.environmentDeclaration ?? ''),
+    sourceRevision: String(form.sourceRevision ?? ''),
+    acknowledgeBoundary: Boolean(form.acknowledgeBoundary),
+    ...(sourcePackage !== undefined
+      ? { sourcePackage }
+      : 'sourcePackage' in form && form.sourcePackage !== undefined
+        ? { sourcePackage: form.sourcePackage }
+        : {}),
+  };
+}
+
+export type SanitizedIntakeProxyRequestResult =
+  | {
+      ok: true;
+      workspace: typeof ALLOWED_WINDMILL_WORKSPACE;
+      input: WindmillIntakeValidationInput;
+    }
+  | {
+      ok: false;
+      httpStatus: 400 | 403 | 413;
+      code:
+        | 'MALFORMED_PAYLOAD'
+        | 'PAYLOAD_TOO_LARGE'
+        | 'UNAUTHORIZED_WORKSPACE'
+        | 'FORBIDDEN_SCRIPT_OVERRIDE';
+      message: string;
+    };
+
+/**
+ * Strictly validates and sanitizes an incoming request body for
+ * `POST /api/windmill/intake/validate`.
+ *
+ * Enforces:
+ * - Maximum payload byte size (`MAX_INTAKE_VALIDATE_BODY_BYTES`, 64 KB)
+ * - Valid JSON object (no arrays, primitives, or malformed JSON)
+ * - No arbitrary script/flow/command overrides
+ * - Workspace restricted strictly to `uor-offline-foundry`
+ * - Strict field allowlist and scalar type checks for `IntakeValidationInput`
+ */
+export function validateAndSanitizeIntakeProxyRequest(
+  rawBody: string | unknown,
+  maxBytes: number = MAX_INTAKE_VALIDATE_BODY_BYTES
+): SanitizedIntakeProxyRequestResult {
+  const serialized =
+    typeof rawBody === 'string'
+      ? rawBody
+      : rawBody !== undefined
+        ? JSON.stringify(rawBody)
+        : '';
+
+  const byteLength = new TextEncoder().encode(serialized).byteLength;
+  if (byteLength > maxBytes) {
+    return {
+      ok: false,
+      httpStatus: 413,
+      code: 'PAYLOAD_TOO_LARGE',
+      message: `Intake validation request body (${byteLength} bytes) exceeds maximum limit of ${maxBytes} bytes.`,
+    };
+  }
+
+  let parsed: unknown = rawBody;
+  if (typeof rawBody === 'string') {
+    if (rawBody.trim().length === 0) {
+      return {
+        ok: false,
+        httpStatus: 400,
+        code: 'MALFORMED_PAYLOAD',
+        message: 'Intake validation request body cannot be empty.',
+      };
+    }
+    try {
+      parsed = JSON.parse(rawBody);
+    } catch {
+      return {
+        ok: false,
+        httpStatus: 400,
+        code: 'MALFORMED_PAYLOAD',
+        message: 'Intake validation request body is not valid JSON.',
+      };
+    }
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {
+      ok: false,
+      httpStatus: 400,
+      code: 'MALFORMED_PAYLOAD',
+      message: 'Intake validation request payload must be a JSON object.',
+    };
+  }
+
+  const topObj = parsed as Record<string, unknown>;
+
+  for (const key of Object.keys(topObj)) {
+    if (FORBIDDEN_DISPATCH_OVERRIDE_KEYS.has(key)) {
+      return {
+        ok: false,
+        httpStatus: 400,
+        code: 'FORBIDDEN_SCRIPT_OVERRIDE',
+        message: `Forbidden property "${key}": arbitrary script or flow paths are not permitted on /api/windmill/intake/validate.`,
+      };
+    }
+  }
+
+  if (topObj.workspace !== undefined) {
+    if (
+      typeof topObj.workspace !== 'string' ||
+      topObj.workspace.trim() !== ALLOWED_WINDMILL_WORKSPACE
+    ) {
+      return {
+        ok: false,
+        httpStatus: 403,
+        code: 'UNAUTHORIZED_WORKSPACE',
+        message: `Refused unauthorized Windmill workspace "${String(topObj.workspace)}". Only "${ALLOWED_WINDMILL_WORKSPACE}" is permitted.`,
+      };
+    }
+  }
+
+  const candidateObj: Record<string, unknown> =
+    topObj.input && typeof topObj.input === 'object' && !Array.isArray(topObj.input)
+      ? (topObj.input as Record<string, unknown>)
+      : topObj;
+
+  if (topObj.input !== undefined) {
+    for (const key of Object.keys(topObj)) {
+      if (key !== 'input' && key !== 'workspace' && !ALLOWED_INTAKE_INPUT_KEYS.has(key)) {
+        return {
+          ok: false,
+          httpStatus: 400,
+          code: 'MALFORMED_PAYLOAD',
+          message: `Unknown top-level property "${key}" in intake validation request.`,
+        };
+      }
+    }
+  }
+
+  for (const key of Object.keys(candidateObj)) {
+    if (FORBIDDEN_DISPATCH_OVERRIDE_KEYS.has(key)) {
+      return {
+        ok: false,
+        httpStatus: 400,
+        code: 'FORBIDDEN_SCRIPT_OVERRIDE',
+        message: `Forbidden property "${key}": arbitrary script or flow paths are not permitted.`,
+      };
+    }
+    if (key === 'workspace') {
+      if (
+        typeof candidateObj.workspace !== 'string' ||
+        candidateObj.workspace.trim() !== ALLOWED_WINDMILL_WORKSPACE
+      ) {
+        return {
+          ok: false,
+          httpStatus: 403,
+          code: 'UNAUTHORIZED_WORKSPACE',
+          message: `Refused unauthorized Windmill workspace "${String(candidateObj.workspace)}". Only "${ALLOWED_WINDMILL_WORKSPACE}" is permitted.`,
+        };
+      }
+      continue;
+    }
+    if (!ALLOWED_INTAKE_INPUT_KEYS.has(key)) {
+      return {
+        ok: false,
+        httpStatus: 400,
+        code: 'MALFORMED_PAYLOAD',
+        message: `Unknown intake property "${key}". Only canonical IntakeValidationInput fields are permitted.`,
+      };
+    }
+  }
+
+  const requiredStringFields = [
+    'projectName',
+    'productFamily',
+    'componentId',
+    'workflowId',
+    'purpose',
+    'declaredInputs',
+    'environmentDeclaration',
+    'sourceRevision',
+  ] as const;
+
+  for (const field of requiredStringFields) {
+    if (typeof candidateObj[field] !== 'string') {
+      return {
+        ok: false,
+        httpStatus: 400,
+        code: 'MALFORMED_PAYLOAD',
+        message: `Field "${field}" must be a string in IntakeValidationInput.`,
+      };
+    }
+  }
+
+  if (typeof candidateObj.acknowledgeBoundary !== 'boolean') {
+    return {
+      ok: false,
+      httpStatus: 400,
+      code: 'MALFORMED_PAYLOAD',
+      message: 'Field "acknowledgeBoundary" must be a boolean in IntakeValidationInput.',
+    };
+  }
+
+  let sanitizedSourcePackage: WindmillSourcePackageSummaryInput | undefined;
+  if (candidateObj.sourcePackage !== undefined) {
+    if (
+      !candidateObj.sourcePackage ||
+      typeof candidateObj.sourcePackage !== 'object' ||
+      Array.isArray(candidateObj.sourcePackage)
+    ) {
+      return {
+        ok: false,
+        httpStatus: 400,
+        code: 'MALFORMED_PAYLOAD',
+        message: 'Field "sourcePackage" must be a JSON object when provided.',
+      };
+    }
+    const rawPkg = candidateObj.sourcePackage as Record<string, unknown>;
+    for (const k of Object.keys(rawPkg)) {
+      if (!ALLOWED_SOURCE_PACKAGE_KEYS.has(k)) {
+        return {
+          ok: false,
+          httpStatus: 400,
+          code: 'MALFORMED_PAYLOAD',
+          message: `Unknown sourcePackage property "${k}".`,
+        };
+      }
+    }
+    if (
+      typeof rawPkg.schema !== 'string' ||
+      typeof rawPkg.packageId !== 'string' ||
+      typeof rawPkg.packageClassification !== 'string' ||
+      typeof rawPkg.isHoloArchive !== 'boolean' ||
+      typeof rawPkg.reviewConfirmed !== 'boolean' ||
+      typeof rawPkg.targetWindmillWorkspace !== 'string' ||
+      typeof rawPkg.packageDigestSha256 !== 'string' ||
+      !Array.isArray(rawPkg.lockfileRefs) ||
+      !rawPkg.lockfileRefs.every((r) => typeof r === 'string') ||
+      !Array.isArray(rawPkg.files)
+    ) {
+      return {
+        ok: false,
+        httpStatus: 400,
+        code: 'MALFORMED_PAYLOAD',
+        message: 'Malformed "sourcePackage" structure in IntakeValidationInput.',
+      };
+    }
+    const sanitizedFiles: WindmillSourcePackageSummaryInput['files'] = [];
+    for (const f of rawPkg.files) {
+      if (!f || typeof f !== 'object' || Array.isArray(f)) {
+        return {
+          ok: false,
+          httpStatus: 400,
+          code: 'MALFORMED_PAYLOAD',
+          message: 'Each entry in "sourcePackage.files" must be an object.',
+        };
+      }
+      const fObj = f as Record<string, unknown>;
+      for (const fk of Object.keys(fObj)) {
+        if (!ALLOWED_SOURCE_PACKAGE_FILE_KEYS.has(fk)) {
+          return {
+            ok: false,
+            httpStatus: 400,
+            code: 'MALFORMED_PAYLOAD',
+            message: `Unknown property "${fk}" in sourcePackage.files entry.`,
+          };
+        }
+      }
+      if (typeof fObj.path !== 'string' || typeof fObj.sha256 !== 'string') {
+        return {
+          ok: false,
+          httpStatus: 400,
+          code: 'MALFORMED_PAYLOAD',
+          message: 'Each file in "sourcePackage.files" requires string "path" and "sha256".',
+        };
+      }
+      sanitizedFiles.push({
+        path: fObj.path,
+        sha256: fObj.sha256,
+        ...(typeof fObj.expectedSha256 === 'string'
+          ? { expectedSha256: fObj.expectedSha256 }
+          : {}),
+      });
+    }
+
+    sanitizedSourcePackage = {
+      schema: rawPkg.schema,
+      packageId: rawPkg.packageId,
+      packageClassification: rawPkg.packageClassification,
+      isHoloArchive: rawPkg.isHoloArchive,
+      reviewConfirmed: rawPkg.reviewConfirmed,
+      targetWindmillWorkspace: rawPkg.targetWindmillWorkspace,
+      packageDigestSha256: rawPkg.packageDigestSha256,
+      ...(typeof rawPkg.expectedPackageDigestSha256 === 'string'
+        ? { expectedPackageDigestSha256: rawPkg.expectedPackageDigestSha256 }
+        : {}),
+      lockfileRefs: rawPkg.lockfileRefs as string[],
+      files: sanitizedFiles,
+    };
+  }
+
+  return {
+    ok: true,
+    workspace: ALLOWED_WINDMILL_WORKSPACE,
+    input: {
+      projectName: candidateObj.projectName as string,
+      productFamily: candidateObj.productFamily as string,
+      componentId: candidateObj.componentId as string,
+      workflowId: candidateObj.workflowId as string,
+      purpose: candidateObj.purpose as string,
+      declaredInputs: candidateObj.declaredInputs as string,
+      environmentDeclaration: candidateObj.environmentDeclaration as string,
+      sourceRevision: candidateObj.sourceRevision as string,
+      acknowledgeBoundary: candidateObj.acknowledgeBoundary as boolean,
+      ...(sanitizedSourcePackage !== undefined
+        ? { sourcePackage: sanitizedSourcePackage }
+        : {}),
+    },
+  };
 }
 
 export function mapRawWindmillJobToRecord(
@@ -718,6 +1117,239 @@ export function createServerSideWindmillReadOnlyTransport(
         };
       }
     },
+
+    async validateIntake(
+      rawInput: WindmillIntakeValidationInput
+    ): Promise<WindmillIntakeValidationResult> {
+      const makeDiag = (
+        code: WindmillConnectionDiagnostic['code'],
+        message: string
+      ): WindmillConnectionDiagnostic => ({
+        timestamp: new Date().toISOString(),
+        endpoint: config.baseUrl ?? WINDMILL_TARGET_CONFIG.baseUrl,
+        workspace: targetWorkspace,
+        code,
+        message,
+        browserNavigatorOnline:
+          typeof navigator !== 'undefined' ? navigator.onLine : false,
+      });
+
+      if (targetWorkspace !== ALLOWED_WINDMILL_WORKSPACE) {
+        return {
+          ok: false,
+          outcome: 'UNAVAILABLE',
+          valid: false,
+          errors: {},
+          validatedAt: null,
+          sideEffectsExecuted: false,
+          workspace: targetWorkspace,
+          diagnostic: makeDiag(
+            'AUTH_NOT_VALIDATED',
+            `Refused intake validation for unauthorized workspace "${targetWorkspace}". Only "${ALLOWED_WINDMILL_WORKSPACE}" is permitted.`
+          ),
+        };
+      }
+
+      let origin: string;
+      try {
+        origin = validateServerLoopbackOrigin(
+          config.baseUrl ?? WINDMILL_TARGET_CONFIG.baseUrl
+        );
+      } catch (err) {
+        return {
+          ok: false,
+          outcome: 'UNAVAILABLE',
+          valid: false,
+          errors: {},
+          validatedAt: null,
+          sideEffectsExecuted: false,
+          workspace: targetWorkspace,
+          diagnostic: makeDiag(
+            'NOT_CONNECTED',
+            err instanceof Error ? err.message : String(err)
+          ),
+        };
+      }
+
+      const sanitized = validateAndSanitizeIntakeProxyRequest(rawInput);
+      if (!sanitized.ok) {
+        return {
+          ok: false,
+          outcome:
+            sanitized.code === 'UNAUTHORIZED_WORKSPACE' ? 'UNAVAILABLE' : 'REJECTED',
+          valid: false,
+          errors: { _payload: sanitized.message },
+          validatedAt: new Date().toISOString(),
+          sideEffectsExecuted: false,
+          workspace: targetWorkspace,
+          diagnostic: makeDiag(
+            sanitized.code === 'UNAUTHORIZED_WORKSPACE'
+              ? 'AUTH_NOT_VALIDATED'
+              : 'SANDBOX_ISOLATED',
+            sanitized.message
+          ),
+        };
+      }
+
+      const token = resolveToken()?.trim();
+      if (!token) {
+        return {
+          ok: false,
+          outcome: 'UNAVAILABLE',
+          valid: false,
+          errors: {},
+          validatedAt: null,
+          sideEffectsExecuted: false,
+          workspace: targetWorkspace,
+          diagnostic: makeDiag(
+            'AUTH_NOT_VALIDATED',
+            'Server-side WINDMILL_TOKEN is not configured. Live Windmill intake validation is UNAVAILABLE.'
+          ),
+        };
+      }
+
+      const endpoint = `${origin}/api/w/${encodeURIComponent(
+        ALLOWED_WINDMILL_WORKSPACE
+      )}/jobs/run_wait_result/p/${FIXED_INTAKE_VALIDATE_SCRIPT_PATH}`;
+
+      try {
+        const res = await fetchFn(endpoint, {
+          method: 'POST',
+          redirect: 'error',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            input: sanitized.input,
+            ...sanitized.input,
+          }),
+        });
+
+        if (res.status >= 300 && res.status < 400) {
+          return {
+            ok: false,
+            outcome: 'UNAVAILABLE',
+            valid: false,
+            errors: {},
+            validatedAt: null,
+            sideEffectsExecuted: false,
+            workspace: ALLOWED_WINDMILL_WORKSPACE,
+            diagnostic: makeDiag(
+              'NOT_CONNECTED',
+              `Refused HTTP ${res.status} redirect from Windmill intake validation endpoint.`
+            ),
+          };
+        }
+
+        if (res.status === 401 || res.status === 403) {
+          return {
+            ok: false,
+            outcome: 'UNAVAILABLE',
+            valid: false,
+            errors: {},
+            validatedAt: null,
+            sideEffectsExecuted: false,
+            workspace: ALLOWED_WINDMILL_WORKSPACE,
+            diagnostic: makeDiag(
+              'AUTH_NOT_VALIDATED',
+              `Windmill rejected intake validation credentials or permissions (HTTP ${res.status}) for workspace "${ALLOWED_WINDMILL_WORKSPACE}".`
+            ),
+          };
+        }
+
+        if (!res.ok) {
+          const safeErr = redactServerWindmillToken(await res.text(), token);
+          return {
+            ok: false,
+            outcome: 'UNAVAILABLE',
+            valid: false,
+            errors: {},
+            validatedAt: null,
+            sideEffectsExecuted: false,
+            workspace: ALLOWED_WINDMILL_WORKSPACE,
+            diagnostic: makeDiag(
+              'NOT_CONNECTED',
+              `Windmill u/admin/intake_validate failed closed (HTTP ${res.status}): ${safeErr}`
+            ),
+          };
+        }
+
+        const payload = (await res.json()) as Record<string, unknown>;
+        if (
+          !payload ||
+          typeof payload !== 'object' ||
+          typeof payload.valid !== 'boolean' ||
+          payload.sideEffectsExecuted !== false
+        ) {
+          return {
+            ok: false,
+            outcome: 'UNAVAILABLE',
+            valid: false,
+            errors: {},
+            validatedAt: null,
+            sideEffectsExecuted: false,
+            workspace: ALLOWED_WINDMILL_WORKSPACE,
+            diagnostic: makeDiag(
+              'NOT_CONNECTED',
+              'Windmill u/admin/intake_validate returned an invalid contract payload or failed sideEffectsExecuted:false guarantee.'
+            ),
+          };
+        }
+
+        const rawErrors =
+          payload.errors &&
+          typeof payload.errors === 'object' &&
+          !Array.isArray(payload.errors)
+            ? (payload.errors as Record<string, unknown>)
+            : {};
+        const cleanErrors: Record<string, string> = {};
+        for (const [k, v] of Object.entries(rawErrors)) {
+          cleanErrors[k] = redactServerWindmillToken(String(v ?? ''), token);
+        }
+
+        const valid = payload.valid === true && Object.keys(cleanErrors).length === 0;
+        const validatedAt =
+          typeof payload.validatedAt === 'string' && payload.validatedAt.trim().length > 0
+            ? payload.validatedAt
+            : new Date().toISOString();
+
+        return {
+          ok: true,
+          outcome: valid ? 'LIVE VALIDATION' : 'REJECTED',
+          valid,
+          errors: cleanErrors,
+          validatedAt,
+          sideEffectsExecuted: false,
+          workspace: ALLOWED_WINDMILL_WORKSPACE,
+          ...(typeof payload.sourcePackageValidated === 'boolean'
+            ? { sourcePackageValidated: payload.sourcePackageValidated }
+            : {}),
+          ...(typeof payload.verifiedFileCount === 'number'
+            ? { verifiedFileCount: payload.verifiedFileCount }
+            : {}),
+        };
+      } catch (err) {
+        const safeErr = redactServerWindmillToken(
+          err instanceof Error ? err.message : String(err),
+          token
+        );
+        return {
+          ok: false,
+          outcome: 'UNAVAILABLE',
+          valid: false,
+          errors: {},
+          validatedAt: null,
+          sideEffectsExecuted: false,
+          workspace: ALLOWED_WINDMILL_WORKSPACE,
+          diagnostic: makeDiag(
+            'NOT_CONNECTED',
+            `Live Windmill intake validation at ${origin} failed: ${safeErr}`
+          ),
+        };
+      }
+    },
   };
 }
 
@@ -826,5 +1458,251 @@ export function createBrowserProxyWindmillTransport(
         };
       }
     },
+
+    async validateIntake(
+      input: WindmillIntakeValidationInput
+    ): Promise<WindmillIntakeValidationResult> {
+      if (typeof fetchFn !== 'function') {
+        return {
+          ok: false,
+          outcome: 'UNAVAILABLE',
+          valid: false,
+          errors: {},
+          validatedAt: null,
+          sideEffectsExecuted: false,
+          workspace: ALLOWED_WINDMILL_WORKSPACE,
+          diagnostic: {
+            timestamp: new Date().toISOString(),
+            endpoint: `${basePath}/intake/validate`,
+            workspace: ALLOWED_WINDMILL_WORKSPACE,
+            code: 'NOT_CONNECTED',
+            message: 'Browser fetch API is unavailable.',
+            browserNavigatorOnline: false,
+          },
+        };
+      }
+      try {
+        const res = await fetchFn(`${basePath}/intake/validate`, {
+          method: 'POST',
+          redirect: 'error',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify(input),
+        });
+        const payload = (await res.json()) as WindmillIntakeValidationResult;
+        if (
+          payload &&
+          typeof payload === 'object' &&
+          payload.sideEffectsExecuted === false &&
+          typeof payload.outcome === 'string'
+        ) {
+          return payload;
+        }
+        return {
+          ok: false,
+          outcome: 'UNAVAILABLE',
+          valid: false,
+          errors: {},
+          validatedAt: null,
+          sideEffectsExecuted: false,
+          workspace: ALLOWED_WINDMILL_WORKSPACE,
+          diagnostic: {
+            timestamp: new Date().toISOString(),
+            endpoint: `${basePath}/intake/validate`,
+            workspace: ALLOWED_WINDMILL_WORKSPACE,
+            code: 'NOT_CONNECTED',
+            message: `Local Windmill intake proxy returned unexpected status HTTP ${res.status}.`,
+            browserNavigatorOnline:
+              typeof navigator !== 'undefined' ? navigator.onLine : false,
+          },
+        };
+      } catch {
+        return {
+          ok: false,
+          outcome: 'UNAVAILABLE',
+          valid: false,
+          errors: {},
+          validatedAt: null,
+          sideEffectsExecuted: false,
+          workspace: ALLOWED_WINDMILL_WORKSPACE,
+          diagnostic: {
+            timestamp: new Date().toISOString(),
+            endpoint: `${basePath}/intake/validate`,
+            workspace: ALLOWED_WINDMILL_WORKSPACE,
+            code: 'NOT_CONNECTED',
+            message:
+              'Local Windmill proxy (/api/windmill/intake/validate) is unreachable. Live intake validation is UNAVAILABLE.',
+            browserNavigatorOnline:
+              typeof navigator !== 'undefined' ? navigator.onLine : false,
+          },
+        };
+      }
+    },
   };
 }
+
+export interface WindmillProxyHttpDispatchResult {
+  statusCode: number;
+  body: Record<string, unknown>;
+}
+
+/**
+ * Narrowly scoped server-side HTTP route dispatcher for `/api/windmill/*`.
+ *
+ * - `POST` is permitted ONLY for `/api/windmill/intake/validate` (non-executing intake validation).
+ * - `GET` is permitted ONLY for `/api/windmill/health`, `/api/windmill/jobs`, and `/api/windmill/jobs/:jobId`.
+ * - All other HTTP methods or arbitrary dispatch paths fail closed with HTTP 405 or 404.
+ */
+export async function dispatchWindmillProxyRoute(params: {
+  method: string;
+  url: string;
+  rawBody?: string;
+  transport: WindmillReadOnlyRuntimeTransport;
+  maxBodyBytes?: number;
+}): Promise<WindmillProxyHttpDispatchResult> {
+  const method = (params.method ?? 'GET').toUpperCase();
+  const parsed = new URL(params.url || '/', 'http://127.0.0.1:3000');
+  const pathname = parsed.pathname.replace(/\/+$/, '');
+
+  // Narrowly scoped POST route: ONLY /api/windmill/intake/validate
+  if (pathname === '/api/windmill/intake/validate') {
+    if (method !== 'POST') {
+      return {
+        statusCode: 405,
+        body: {
+          ok: false,
+          outcome: 'UNAVAILABLE',
+          valid: false,
+          errors: {},
+          validatedAt: null,
+          sideEffectsExecuted: false,
+          workspace: ALLOWED_WINDMILL_WORKSPACE,
+          code: 'SANDBOX_ISOLATED',
+          message:
+            'Only POST is permitted on /api/windmill/intake/validate.',
+        },
+      };
+    }
+
+    const sanitized = validateAndSanitizeIntakeProxyRequest(
+      params.rawBody ?? '',
+      params.maxBodyBytes ?? MAX_INTAKE_VALIDATE_BODY_BYTES
+    );
+
+    if (!sanitized.ok) {
+      return {
+        statusCode: sanitized.httpStatus,
+        body: {
+          ok: false,
+          outcome:
+            sanitized.code === 'UNAUTHORIZED_WORKSPACE'
+              ? 'UNAVAILABLE'
+              : 'REJECTED',
+          valid: false,
+          errors: { _payload: sanitized.message },
+          validatedAt: new Date().toISOString(),
+          sideEffectsExecuted: false,
+          workspace: ALLOWED_WINDMILL_WORKSPACE,
+          diagnostic: {
+            timestamp: new Date().toISOString(),
+            endpoint: '/api/windmill/intake/validate',
+            workspace: ALLOWED_WINDMILL_WORKSPACE,
+            code:
+              sanitized.code === 'UNAUTHORIZED_WORKSPACE'
+                ? 'AUTH_NOT_VALIDATED'
+                : 'SANDBOX_ISOLATED',
+            message: sanitized.message,
+            browserNavigatorOnline: false,
+          },
+        },
+      };
+    }
+
+    if (typeof params.transport.validateIntake !== 'function') {
+      return {
+        statusCode: 503,
+        body: {
+          ok: false,
+          outcome: 'UNAVAILABLE',
+          valid: false,
+          errors: {},
+          validatedAt: null,
+          sideEffectsExecuted: false,
+          workspace: ALLOWED_WINDMILL_WORKSPACE,
+          diagnostic: {
+            timestamp: new Date().toISOString(),
+            endpoint: '/api/windmill/intake/validate',
+            workspace: ALLOWED_WINDMILL_WORKSPACE,
+            code: 'NOT_CONNECTED',
+            message: 'Server-side intake validation transport is unavailable.',
+            browserNavigatorOnline: false,
+          },
+        },
+      };
+    }
+
+    const result = await params.transport.validateIntake(sanitized.input);
+    const statusCode = result.ok
+      ? 200
+      : result.diagnostic?.code === 'AUTH_NOT_VALIDATED'
+        ? 403
+        : 503;
+
+    return {
+      statusCode,
+      body: result as unknown as Record<string, unknown>,
+    };
+  }
+
+  // All other /api/windmill/* endpoints are strictly GET-only
+  if (method !== 'GET') {
+    return {
+      statusCode: 405,
+      body: {
+        ok: false,
+        code: 'SANDBOX_ISOLATED',
+        message:
+          'Only read-only GET requests are permitted on /api/windmill/* (except POST /api/windmill/intake/validate). Compiler execution, workflow dispatch, triggers, and release remain disabled.',
+      },
+    };
+  }
+
+  if (pathname === '/api/windmill/health') {
+    const health = await params.transport.probeHealth();
+    return {
+      statusCode: 200,
+      body: health as unknown as Record<string, unknown>,
+    };
+  }
+
+  if (pathname === '/api/windmill/jobs') {
+    const projectId = parsed.searchParams.get('projectId') ?? undefined;
+    const listResult = await params.transport.listJobs!(projectId);
+    return {
+      statusCode: 200,
+      body: listResult as unknown as Record<string, unknown>,
+    };
+  }
+
+  const jobMatch = pathname.match(/^\/api\/windmill\/jobs\/([^/]+)$/);
+  if (jobMatch) {
+    const jobId = decodeURIComponent(jobMatch[1]);
+    const jobResult = await params.transport.fetchJobById(jobId);
+    return {
+      statusCode: 200,
+      body: jobResult as unknown as Record<string, unknown>,
+    };
+  }
+
+  return {
+    statusCode: 404,
+    body: {
+      ok: false,
+      code: 'NOT_CONNECTED',
+      message: `Unknown read-only Windmill adapter endpoint: ${pathname}`,
+    },
+  };
+}
+
